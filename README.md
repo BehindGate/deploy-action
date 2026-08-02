@@ -32,8 +32,8 @@ jobs:
           path: dist
           token: ${{ secrets.BEHINDGATE_TOKEN }}
           # Pin the endpoint rather than trusting the token's own claim.
-          # Use your environment's deploy endpoint -- see "Why you should pin url".
-          url: https://app.test.behindgate.net/api/deploy
+          # See "Why you should pin url" for how to find yours.
+          url: https://app.behindgate.com/api/deploy
 ```
 
 Generate a deploy token in the BehindGate dashboard under **Settings → Deploy
@@ -50,7 +50,7 @@ the site, so that `index.html` sits at the top of it.
 | `token` | yes | — | BehindGate deploy token. Always pass from a secret. |
 | `url` | no | — | Pin the deploy endpoint. **Strongly recommended** — see below. |
 | `cli-version` | no | `defaultVersion` from [`versions.json`](versions.json) | Which `bg-deploy` version to use. Must be pinned in this repo. |
-| `download-base-url` | no | `defaultDownloadBaseUrl` from [`versions.json`](versions.json) | Host to download the CLI from. Override only for non-production environments. |
+| `download-base-url` | no | `https://app.behindgate.com` | Host to download the CLI from. Override only for non-production environments (for example `https://app.test.behindgate.net`). |
 
 ## Outputs
 
@@ -84,8 +84,18 @@ secret that a single compromised account can rewrite:
   with:
     path: dist
     token: ${{ secrets.BEHINDGATE_TOKEN }}
-    url: https://app.test.behindgate.net/api/deploy   # pinned, reviewable
+    url: https://app.behindgate.com/api/deploy   # pinned, reviewable
 ```
+
+**Finding your endpoint.** Run the step once *without* `url`. The CLI reports the
+endpoint it used on its first line:
+
+```
+Deploying to https://app.behindgate.com/api/deploy
+```
+
+Copy that value into `url`. From then on the destination is fixed by your
+workflow rather than by the token.
 
 If you omit `url`, the Action emits a warning explaining what it is trusting.
 
@@ -122,13 +132,6 @@ returned by the deploy API but never echoed, and it has no `--json` mode. This
 Action is a thin wrapper over the CLI and does not call the deploy API itself,
 so it has nothing to read. The output is declared and its parser is already in
 place, so it will populate automatically once the CLI exposes the value.
-
-**Only one download host is confirmed to exist.** `download-base-url` defaults to
-`https://app.test.behindgate.net`, which is the only host observed serving the
-CLI. `app.behindgate.net` — the name a production deployment would be expected
-to use — does not currently resolve, checked from two independent networks. If
-you deploy against a different environment, set `download-base-url` and make
-sure the pinned checksums match what that host serves.
 
 **Download URLs are unversioned.** Artifacts live at
 `/downloads/bg-deploy-<os>-<arch>.tar.gz` with no version in the path, so

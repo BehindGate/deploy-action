@@ -22,16 +22,18 @@
     "different build, checksum verification fails closed and the deploy stops. That is",
     "intended. See docs/MAINTAINERS.md for how to re-capture after a CLI release.",
     "",
-    "HOST STATUS: app.test.behindgate.net is the only host confirmed to serve the CLI.",
-    "app.behindgate.net -- the name a production deployment would be expected to use --",
-    "does not currently resolve, verified from two independent networks. Point",
-    "'defaultDownloadBaseUrl' at the production host and re-capture once it exists."
+    "HOSTS: production is app.behindgate.com (.com, not .net). For 2026.07.1 it serves",
+    "byte-identical archives to the test environment at app.test.behindgate.net -- every",
+    "platform was downloaded from both and hashed locally, and all ten digests agree. One",
+    "pin set therefore covers both environments. Should a future release diverge between",
+    "them, this table needs a per-environment dimension rather than one set of hashes."
   ],
   "defaultVersion": "2026.07.1",
-  "defaultDownloadBaseUrl": "https://app.test.behindgate.net",
+  "defaultDownloadBaseUrl": "https://app.behindgate.com",
   "versions": {
     "2026.07.1": {
-      "capturedFrom": "https://app.test.behindgate.net",
+      "capturedFrom": "https://app.behindgate.com",
+      "alsoVerifiedAgainst": ["https://app.test.behindgate.net"],
       "capturedAt": "2026-08-02",
       "platforms": {
         "linux-amd64": {

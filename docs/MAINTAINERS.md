@@ -54,26 +54,33 @@ anything relative to whoever served it — keeping them as one field stops them
 drifting apart. `node script/checksums.js verify` defaults to that host, so CI
 asks "do these pins still describe their own source?".
 
-> **Blocking question before tagging `v1`.** `app.behindgate.net` — the name a
-> production deployment would be expected to use — **does not resolve**. This was
-> checked from two independent networks: the development sandbox (blocked at the
-> egress proxy) and a GitHub-hosted runner, where the CI checksum job reported
-> `fetch failed` for all five platforms against it. `app.test.behindgate.net` is
-> currently the only host observed serving the CLI, and it is what
-> `defaultDownloadBaseUrl` points at.
->
-> Shipping a test environment as the default for a production Action is wrong,
-> but so is defaulting to a hostname that does not exist. Confirm the real
-> production download host, then:
->
-> ```bash
-> node script/checksums.js verify --base-url https://<production-host>
-> ```
->
-> If it serves an identical build, set `defaultDownloadBaseUrl` and `capturedFrom`
-> to it and commit. If it serves a *different* build, the table needs a
-> per-environment dimension — do not simply overwrite the hashes, since that
-> silently drops verification for the other environment.
+The two known environments are:
+
+| Environment | Host |
+| --- | --- |
+| Production | `https://app.behindgate.com` — note **.com**, not `.net` |
+| Test | `https://app.test.behindgate.net` |
+
+For 2026.07.1 both serve **byte-identical** archives: every platform was
+downloaded from each host and hashed locally, and all ten digests agree. One pin
+set therefore covers both, which is why `alsoVerifiedAgainst` records the second
+host rather than the table carrying two sets of hashes.
+
+Check that assumption still holds whenever a new CLI version is pinned:
+
+```bash
+node script/checksums.js verify --base-url https://app.behindgate.com
+node script/checksums.js verify --base-url https://app.test.behindgate.net
+```
+
+If a future release ever diverges between environments, give the table a
+per-environment dimension. Do **not** just overwrite the hashes with one host's
+values — that silently drops verification for the other environment.
+
+> `app.behindgate.net` (`.net`) does not resolve and never did; an early draft of
+> this Action defaulted to it, and CI caught it as `fetch failed` across all five
+> platforms. If a checksum job reports unreachability rather than a mismatch,
+> suspect the hostname before suspecting the pins.
 
 ## Why `dist/` is committed
 
