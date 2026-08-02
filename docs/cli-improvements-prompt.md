@@ -36,19 +36,75 @@ not live on the download host, every wrapper can take the newest build and verif
 it at runtime — no pinned tables, no per-release wrapper update, no stale clients.
 It removes the most machinery for the least ongoing cost.
 
+One thing outranks even signing, though: the published binary was built from a
+**dirty working tree**, so it corresponds to no commit at all. Signing an
+unreproducible artifact only attests that a specific pile of bytes was blessed —
+not that anyone can rebuild or audit it. Fix the build first.
+
 Suggested order:
 
-1. **Sign the releases** — unblocks "always current" for all three integrations.
-2. **Versioned, immutable URLs** — less about reproducibility than about
+1. **Release from a clean, tagged commit** — prerequisite for everything else.
+2. **Sign the releases** — unblocks "always current" for all three integrations.
+3. **Versioned, immutable URLs** — less about reproducibility than about
    *incident recovery*: today a bad CLI release breaks every customer at once with
    no way to roll back.
-3. **Machine-readable output** — the only way wrappers stop parsing console text.
-4. **Endpoint pinning** — `BEHINDGATE_URL`, precedence, mismatch detection.
-5. **Exit codes**, then **small fixes**.
+4. **Machine-readable output** — the only way wrappers stop parsing console text.
+5. **Endpoint pinning** — `BEHINDGATE_URL`, precedence, mismatch detection.
+6. **Exit codes**, then **small fixes** (one of which halves the download size).
 
 Each task has acceptance criteria. Where one changes observable behaviour, keep
 backward compatibility unless the task says otherwise: wrappers currently pin to
 specific CLI versions, and will keep doing so until signing lands.
+
+## Release from a clean, tagged commit
+
+**Problem.** The binary published as `bg-deploy 2026.07.1 (git 79f1f9f)` was built
+from a modified working tree. Go's own build metadata, embedded in the shipped
+artifact, says so:
+
+```
+build  vcs.modified=true
+build  vcs.revision=79f1f9ff1e3ed8b7383e0bc937cfa5afcf429dca
+build  vcs.time=2026-07-31T13:07:03Z
+mod    github.com/behindgate/app/deployer  v0.0.0-20260731130703-79f1f9ff1e3e+dirty
+```
+
+**Why it matters.** `git 79f1f9f` in `--version` is not true of the artifact
+customers execute: the source it was built from had uncommitted changes, so that
+commit does not describe it. Concretely, nobody can rebuild this binary, diff it
+against source, bisect a regression to a commit, or answer "what code is running
+in our CI?" with evidence. A security review of the repository says nothing about
+the artifact.
+
+This also undercuts every other item here. Signing an unreproducible binary
+attests only that someone blessed a particular pile of bytes; it cannot attest
+that those bytes correspond to reviewed source. Fix this first or the signature is
+worth much less than it appears.
+
+(The web app is affected too — the deployed `index.html` carries
+`<!-- build: 2026.07.1 79f1f9f-dirty -->` — so this looks like a property of the
+release tooling rather than a one-off.)
+
+**Do this.**
+
+- Build releases only in CI, triggered by a tag, from a clean checkout.
+- **Fail the release if `vcs.modified` is true.** Go records this for free; make it
+  a hard gate rather than a warning.
+- Build with `-trimpath` and a pinned Go toolchain (currently `go1.24.13`) so
+  paths and toolchain drift do not change output.
+- Embed the tag, the full commit SHA, and the build timestamp; have `--version`
+  print the full SHA rather than a short prefix.
+- Ideally, make builds byte-reproducible so an independent rebuild of the tag
+  reproduces the published archive exactly. Static Go binaries are unusually close
+  to this already.
+
+**Acceptance criteria.**
+
+- A release build from a dirty tree fails rather than publishing.
+- `--version` reports a commit that exists in the repository and fully describes
+  the artifact.
+- Rebuilding a published tag on a clean checkout reproduces the published bytes,
+  or the differences are documented and understood.
 
 ## Versioned, immutable download URLs
 
@@ -312,6 +368,19 @@ Also validate `<path>` before the token so path errors report themselves.
   Requesting help successfully is not an error; it should exit 0. Usage printed
   *because* of a bad invocation should keep exiting 2. This trips up CI wrappers
   that run `--help` as a smoke test.
+- **Binaries ship unstripped, roughly doubling the download.** `file` reports
+  `with debug_info, not stripped`. Measured on `linux-amd64`:
+
+  | | binary | gzipped (what is downloaded) |
+  | --- | --- | --- |
+  | as shipped | 8,889,884 | 4,986,491 |
+  | stripped | 6,023,320 | 2,519,056 |
+
+  Building with `-ldflags="-s -w"` cuts the published archive from ~5.0 MB to
+  ~2.5 MB — a **~50% reduction**, paid on every cold CI run by every customer
+  across five platforms. Keep an unstripped build available for debugging if you
+  want symbols, but do not make it the default download.
+
 - **No `windows-arm64` build.** Published platforms are `linux-amd64`,
   `linux-arm64`, `darwin-amd64`, `darwin-arm64`, `windows-amd64`. Windows ARM64
   runners are increasingly common; the Action currently has to fail explicitly on
