@@ -48,10 +48,20 @@ inputs:
 
   cli-version:
     description: |
-      Which bg-deploy version to use. Must be pinned in this repository's
-      versions.json, which is what the download is verified against.
+      Escape hatch for holding a specific bg-deploy version. Normally leave
+      this unset.
 
-      Defaults to the version pinned as `defaultVersion` in versions.json.
+      BehindGate is a SaaS, so the server moves whether or not your workflow
+      does. Holding an old CLI therefore buys no reproducibility -- it only
+      leaves you on a client the server has moved past, and one BehindGate
+      cannot ship a fix to. The default tracks the published CLI, kept current
+      by a scheduled job in this repository that verifies each new release and
+      opens a pull request.
+
+      Set this only to hold the previous version after a bad CLI release.
+      Superseded versions stay in versions.json for exactly that purpose, and
+      the value must be one of them -- an unpinned version has no checksum to
+      verify against.
 
       Note: the vendor's download URLs are currently unversioned, so this
       asserts which build the host is expected to be serving rather than

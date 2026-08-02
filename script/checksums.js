@@ -89,15 +89,104 @@ async function digestOf(url) {
   };
 }
 
+/**
+ * Adopt whatever version the download host is currently serving.
+ *
+ * The backend is a SaaS: it moves whether or not this repository does, so a
+ * pinned client buys no reproducibility. Pinning here exists only because the
+ * sole integrity mechanism available is a hash committed to this repo -- there
+ * are no signatures, and a SHA256SUMS.txt served beside the binaries proves
+ * nothing. This mode keeps the pin honest without keeping it stale: run it on a
+ * schedule, and the default follows upstream within a release rather than
+ * whenever someone remembers.
+ *
+ * Adds a new entry rather than overwriting the old one, so a previously pinned
+ * version stays selectable via `cli-version` if a release turns out to be bad.
+ */
+async function runBump(table, args) {
+  const current = table.defaultVersion;
+  const baseUrl = (
+    args.baseUrl ||
+    process.env.BG_DOWNLOAD_BASE_URL ||
+    table.defaultDownloadBaseUrl
+  ).replace(/\/+$/, '');
+
+  console.log(`current default: ${current}\nchecking:        ${baseUrl}\n`);
+
+  const platforms = {};
+  const served = new Set();
+
+  for (const [platform, artifact] of Object.entries(table.versions[current].platforms)) {
+    let result;
+    try {
+      result = await digestOf(`${baseUrl}/downloads/${artifact.archive}`);
+    } catch (error) {
+      console.error(`  !! ${platform.padEnd(14)} ${error.message}`);
+      process.exit(1);
+    }
+
+    const embedded = detectVersion(result.body, artifact.archive);
+    if (!embedded) {
+      console.error(
+        `  !! ${platform.padEnd(14)} could not determine the served version; refusing to guess`
+      );
+      process.exit(1);
+    }
+
+    served.add(embedded);
+    platforms[platform] = {
+      archive: artifact.archive,
+      binary: artifact.binary,
+      sha256: result.sha256,
+    };
+    console.log(`  ${platform.padEnd(14)} ${embedded}  ${result.sha256}`);
+  }
+
+  if (served.size !== 1) {
+    console.error(
+      `\nThe host is mid-release: platforms report ${[...served].join(', ')}. ` +
+        `Refusing to pin a set that is not one coherent release. Try again later.`
+    );
+    process.exit(1);
+  }
+
+  const version = [...served][0];
+
+  if (version === current) {
+    console.log(`\nAlready on ${current}; nothing to do.`);
+    return;
+  }
+
+  if (!table.versions[version]) {
+    table.versions[version] = {
+      capturedFrom: baseUrl,
+      capturedAt: new Date().toISOString().slice(0, 10),
+      platforms,
+    };
+  }
+  table.defaultVersion = version;
+  fs.writeFileSync(TABLE_PATH, `${JSON.stringify(table, null, 2)}\n`);
+
+  console.log(`\nPinned ${version} and made it the default (was ${current}).`);
+  console.log(`${current} stays in the table and remains selectable via cli-version.`);
+}
+
 async function main() {
   const args = parseArgs(process.argv);
 
-  if (args.mode !== 'verify' && args.mode !== 'write') {
-    console.error('Usage: node script/checksums.js <verify|write> [--version V] [--base-url URL]');
+  if (!['verify', 'write', 'bump'].includes(args.mode)) {
+    console.error(
+      'Usage: node script/checksums.js <verify|write|bump> [--version V] [--base-url URL]'
+    );
     process.exit(2);
   }
 
   const table = JSON.parse(fs.readFileSync(TABLE_PATH, 'utf8'));
+
+  if (args.mode === 'bump') {
+    return runBump(table, args);
+  }
+
   const version = args.version || process.env.BG_CLI_VERSION || table.defaultVersion;
 
   const entry = table.versions[version];

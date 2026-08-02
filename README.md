@@ -49,7 +49,7 @@ the site, so that `index.html` sits at the top of it.
 | `path` | yes | — | Folder to deploy, or an existing `.zip` to upload as-is. |
 | `token` | yes | — | BehindGate deploy token. Always pass from a secret. |
 | `url` | no | — | Pin the deploy endpoint. **Strongly recommended** — see below. |
-| `cli-version` | no | `defaultVersion` from [`versions.json`](versions.json) | Which `bg-deploy` version to use. Must be pinned in this repo. |
+| `cli-version` | no | `defaultVersion` from [`versions.json`](versions.json) | Escape hatch to hold a specific `bg-deploy` version after a bad release. Normally leave unset — see [Which CLI version you get](#which-cli-version-you-get). |
 | `download-base-url` | no | `https://app.behindgate.com` | Host to download the CLI from. Override only for non-production environments (for example `https://app.test.behindgate.net`). |
 
 ## Outputs
@@ -134,6 +134,42 @@ silently falls back to running the binary anyway.
 
 CI re-checks the pinned hashes against the live host on every run, so drift
 surfaces as a build failure rather than as a surprise mid-deploy.
+
+## Which CLI version you get
+
+**Effectively the current one — you should not pin, and by default you don't.**
+
+BehindGate is a SaaS. The server moves whether or not your workflow does, so
+holding an old CLI buys you no reproducibility: the half that actually decides
+what a deploy does was never pinned in the first place. A stale client is a
+liability, not a safety measure — it drifts away from the server it talks to, and
+BehindGate cannot ship you a fix for a version you have frozen.
+
+So why does `versions.json` pin hashes at all? **Integrity, not stability.** This
+Action downloads a binary and executes it on your runner, next to your source,
+your build output and your secrets. That is arbitrary code execution inside your
+trust boundary, and it deserves verification regardless of how the backend is
+deployed. The only mechanism available today is a hash committed to this
+repository, because the vendor publishes no signatures and a `SHA256SUMS.txt`
+served beside the binaries proves nothing.
+
+Verifying against a fixed hash and always taking the newest build are, strictly,
+in tension. [`cli-update.yml`](.github/workflows/cli-update.yml) resolves it: a
+scheduled job follows the published CLI, verifies it, and opens a pull request.
+New versions reach you through a normal release of this Action rather than
+through a frozen table someone has to remember to update — automatic, but with a
+reviewed commit behind every change of hash.
+
+`cli-version` exists as an escape hatch for the one case that genuinely needs it:
+a bad CLI release, where you want to hold the previous version until it is fixed.
+Superseded versions stay in the table for exactly that reason. It is not a
+stability feature, and using it routinely will leave you on a client the server
+has moved past.
+
+Signing the releases would remove this machinery entirely — the Action could
+verify a signature at runtime and always take the current build. That is the
+highest-leverage item in
+[`docs/cli-improvements-prompt.md`](docs/cli-improvements-prompt.md).
 
 ## Known gaps
 

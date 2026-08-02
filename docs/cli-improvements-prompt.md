@@ -20,11 +20,37 @@ The findings here came from black-box testing of `bg-deploy 2026.07.1 (git
 local capture server with `--url`, and probing the download host. Re-verify
 anything you intend to act on; do not assume the details still hold.
 
-Work through the tasks in priority order. Each has acceptance criteria. Where a
-task changes observable behaviour, keep backward compatibility unless the task
-says otherwise, because published Actions pin to specific CLI versions.
+**Where to start.** Signing is the highest-leverage item, and the reasoning is
+worth stating because it is not obvious from the list.
 
-## Priority 1 — Versioned, immutable download URLs
+BehindGate is a SaaS: the server moves whether or not any client does. So pinning
+a CLI version buys consumers no reproducibility — the half that decides what a
+deploy actually does was never pinned. Every integration should simply track the
+current build. They cannot, because the only integrity mechanism available is a
+hash committed into each wrapper's own repository, and a hash can only pin one
+specific build. `SHA256SUMS.txt` does not help: it is served by the same host as
+the binaries, so it proves only that a download was not truncated.
+
+Signing breaks that deadlock. With a signature verifiable against a key that does
+not live on the download host, every wrapper can take the newest build and verify
+it at runtime — no pinned tables, no per-release wrapper update, no stale clients.
+It removes the most machinery for the least ongoing cost.
+
+Suggested order:
+
+1. **Sign the releases** — unblocks "always current" for all three integrations.
+2. **Versioned, immutable URLs** — less about reproducibility than about
+   *incident recovery*: today a bad CLI release breaks every customer at once with
+   no way to roll back.
+3. **Machine-readable output** — the only way wrappers stop parsing console text.
+4. **Endpoint pinning** — `BEHINDGATE_URL`, precedence, mismatch detection.
+5. **Exit codes**, then **small fixes**.
+
+Each task has acceptance criteria. Where one changes observable behaviour, keep
+backward compatibility unless the task says otherwise: wrappers currently pin to
+specific CLI versions, and will keep doing so until signing lands.
+
+## Versioned, immutable download URLs
 
 **Problem.** Archives are published only at unversioned paths:
 
@@ -39,13 +65,17 @@ returns 403 (`/downloads/v2026.07.1/...`, `/downloads/2026.07.1/...`,
 `/downloads/bg-deploy-2026.07.1-linux-amd64.tar.gz`), and `/downloads/` itself
 returns the SPA shell rather than an index.
 
-**Why it matters.** Consumers pin per-platform SHA256 checksums to verify what
-they download. With no version in the URL, that pin is against a moving target:
-the host can serve a different build under the same name at any time. The
-Action's `cli-version` input can therefore only *assert* what the host should be
-serving. It fails closed, so it is safe — but every consumer breaks
-simultaneously the moment a new CLI ships, and there is no way to deliberately
-stay on an older CLI after a regression.
+**Why it matters.** Not reproducibility — against a SaaS backend, holding an old
+client gives none. The real cost is **incident recovery**. When a CLI release
+regresses, there is currently no way for anyone to go back to the previous build:
+the old bytes are simply gone from the only URL that exists, so every customer is
+on the broken version simultaneously until a fix ships. Versioned URLs make
+rollback a one-line change in a workflow rather than an emergency re-release.
+
+Secondarily, consumers pin per-platform SHA256 checksums to verify downloads, and
+with no version in the URL that pin is against a moving target: the host can serve
+different bytes under the same name at any time. It fails closed, so it is safe —
+but it means a wrapper's pinned table goes stale the moment a new CLI ships.
 
 **Do this.**
 
@@ -76,7 +106,7 @@ stay on an older CLI after a regression.
 - Unversioned paths still resolve to the newest release.
 - Production and test serve the same layout.
 
-## Priority 2 — Expose machine-readable output
+## Expose machine-readable output
 
 **Problem.** On success the CLI prints only the release id:
 
@@ -128,7 +158,7 @@ integrations; the human line is what someone reading a log actually wants.
 - Existing consumers that parse the current success line keep working — treat the
   URL as an addition, not a reformat.
 
-## Priority 3 — Endpoint pinning: env var, precedence, and mismatch detection
+## Endpoint pinning: env var, precedence, and mismatch detection
 
 **Problem.** `--url` is currently the only way to pin the deploy endpoint.
 Verified by testing: exporting `BEHINDGATE_URL` has no effect — the CLI still
@@ -190,7 +220,7 @@ configuration" as the security advice.
 - Documentation describes the env var as convenience and continues to recommend
   pinning in reviewed configuration.
 
-## Priority 4 — Sign the releases
+## Sign the releases
 
 **Problem.** `SHA256SUMS.txt` is served by the same host as the binaries it
 describes. It therefore proves only that a download was not truncated in
@@ -199,9 +229,25 @@ beside it, and the check still passes.
 
 The Action works around this by committing per-platform hashes into its own git
 repository, where the download host cannot rewrite them and any change requires a
-reviewed commit. That works, but it does not scale — the Bitbucket Pipe and the
-GitLab component each need their own copy of the same table, and all three must
-be updated in lockstep on every CLI release.
+reviewed commit. That works, but the cost is structural, not just duplicated
+effort:
+
+- The Bitbucket Pipe and the GitLab component each need their own copy of the same
+  table, and all three must move in lockstep on every CLI release.
+- **It forces every wrapper to pin a version it does not want to pin.** A hash
+  identifies one specific build, so verifying against a committed hash and always
+  taking the current build are mutually exclusive. Against a SaaS backend that is
+  exactly backwards: the server moves regardless, so a pinned client gains nothing
+  and slowly drifts out of step with the service it talks to.
+
+The Action currently mitigates this with a scheduled job that follows the
+published CLI, re-verifies it and opens a pull request — machinery that exists
+solely because signatures do not.
+
+Signing collapses all of it. A wrapper can fetch the current build and verify a
+signature at runtime: no pinned tables, no scheduled bump jobs, no version input,
+no stale clients, and a genuinely stronger guarantee than a hash — because the
+signing key is not controlled by whoever controls the download host.
 
 **Do this.**
 
@@ -223,7 +269,7 @@ be updated in lockstep on every CLI release.
 This is what lets the downstream integrations drop their pinned checksum tables
 and verify a signature instead.
 
-## Priority 5 — Make exit codes consistent
+## Make exit codes consistent
 
 **Problem.** Observed behaviour of 2026.07.1:
 
@@ -260,7 +306,7 @@ Also validate `<path>` before the token so path errors report themselves.
 - `--help` documents the full set.
 - A non-existent `<path>` reports a path error regardless of token validity.
 
-## Priority 6 — Small fixes
+## Small fixes
 
 - **`--help` exits 2.** Both `--help` and `-h` print usage and exit **2**.
   Requesting help successfully is not an error; it should exit 0. Usage printed
