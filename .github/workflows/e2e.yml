@@ -1,0 +1,65 @@
+name: E2E
+
+# A real deploy against a real BehindGate environment. Gated on a repository
+# secret so that forks -- which never receive secrets -- neither fail nor need
+# credentials. Everything else about this Action is covered by CI, which
+# requires no secret at all.
+
+on:
+  workflow_dispatch:
+  push:
+    branches: [main]
+
+permissions:
+  contents: read
+
+jobs:
+  check-secret:
+    name: Check for credentials
+    runs-on: ubuntu-latest
+    outputs:
+      available: ${{ steps.check.outputs.available }}
+    steps:
+      # Secrets cannot be referenced in a job-level `if:`, so the presence check
+      # has to happen inside a step and be published as an output.
+      - id: check
+        env:
+          TOKEN: ${{ secrets.BEHINDGATE_TOKEN }}
+        run: |
+          if [ -n "$TOKEN" ]; then
+            echo "available=true" >> "$GITHUB_OUTPUT"
+          else
+            echo "available=false" >> "$GITHUB_OUTPUT"
+            echo "::notice::BEHINDGATE_TOKEN is not set; skipping the end-to-end deploy."
+          fi
+
+  deploy:
+    name: Deploy a fixture site
+    needs: check-secret
+    if: needs.check-secret.outputs.available == 'true'
+    runs-on: ubuntu-latest
+    steps:
+      - uses: actions/checkout@v4
+
+      - name: Deploy
+        id: deploy
+        uses: ./
+        with:
+          path: e2e/site
+          token: ${{ secrets.BEHINDGATE_TOKEN }}
+          # Pinned rather than trusted from the token; see the README.
+          url: ${{ secrets.BEHINDGATE_DEPLOY_URL }}
+
+      - name: Assert the Action reported a release
+        env:
+          RELEASE_ID: ${{ steps.deploy.outputs.release-id }}
+          URL: ${{ steps.deploy.outputs.url }}
+        run: |
+          if [ -z "$RELEASE_ID" ]; then
+            echo "::error::The deploy succeeded but release-id was empty."
+            exit 1
+          fi
+          echo "Deployed release $RELEASE_ID"
+          # `url` is expected to be empty until bg-deploy prints the deployed
+          # address; see "Known gaps" in the README. Reported, not asserted.
+          echo "url output: '${URL:-<empty>}'"

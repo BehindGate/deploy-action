@@ -1,0 +1,87 @@
+name: CI
+
+on:
+  push:
+    branches: [main]
+  pull_request:
+
+permissions:
+  contents: read
+
+concurrency:
+  group: ci-${{ github.ref }}
+  cancel-in-progress: true
+
+jobs:
+  lint:
+    name: Lint
+    runs-on: ubuntu-latest
+    steps:
+      - uses: actions/checkout@v4
+      - uses: actions/setup-node@v4
+        with:
+          node-version-file: .node-version
+          cache: npm
+      - run: npm ci
+      - run: npm run lint
+
+  test:
+    name: Test (${{ matrix.os }})
+    runs-on: ${{ matrix.os }}
+    strategy:
+      fail-fast: false
+      matrix:
+        os: [ubuntu-latest, macos-latest, windows-latest]
+    steps:
+      - uses: actions/checkout@v4
+      - uses: actions/setup-node@v4
+        with:
+          node-version-file: .node-version
+          cache: npm
+      - run: npm ci
+
+      # Unit tests are pure and run everywhere. The integration tests drive the
+      # real CLI against a local capture server with a fake JWT -- no secret, so
+      # they run on forks too. They skip themselves on Windows (they shell out to
+      # tar) and skip if the download host is unreachable.
+      - run: npm test
+
+  dist:
+    name: dist/ is in sync with src/
+    runs-on: ubuntu-latest
+    steps:
+      - uses: actions/checkout@v4
+      - uses: actions/setup-node@v4
+        with:
+          node-version-file: .node-version
+          cache: npm
+      - run: npm ci
+      - run: npm run build
+
+      # The Action runs dist/index.js directly, so a stale bundle means the
+      # published Action does not match the reviewed source.
+      - name: Check for uncommitted bundle changes
+        run: |
+          if ! git diff --exit-code --stat -- dist/; then
+            echo ""
+            echo "::error::dist/ is out of date. Run 'npm run build' and commit the result."
+            git diff -- dist/ | head -100
+            exit 1
+          fi
+
+  checksums:
+    name: versions.json matches the published artifacts
+    runs-on: ubuntu-latest
+    steps:
+      - uses: actions/checkout@v4
+      - uses: actions/setup-node@v4
+        with:
+          node-version-file: .node-version
+          cache: npm
+      - run: npm ci
+
+      # Download URLs are unversioned, so the host can start serving a different
+      # build under the same version at any time. This job turns that into a
+      # visible CI failure instead of a surprise mid-deploy for a user.
+      - name: Verify pinned checksums against the download host
+        run: node script/checksums.js verify

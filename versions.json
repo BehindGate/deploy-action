@@ -1,0 +1,55 @@
+{
+  "comment": [
+    "Pinned SHA256 checksums for the bg-deploy CLI, keyed by version and platform.",
+    "",
+    "WHY THIS FILE EXISTS: the vendor publishes a SHA256SUMS.txt next to the binaries,",
+    "but it is served by the same host as the binaries themselves. It therefore proves",
+    "only that a download was not truncated in transit -- anyone able to serve a modified",
+    "binary can serve a matching checksum beside it. A hash committed to this repository",
+    "is the part that host cannot rewrite: changing it requires a commit that shows up in",
+    "git history and in code review.",
+    "",
+    "These values were computed locally from downloaded archives, not copied out of the",
+    "vendor's SHA256SUMS.txt (they were then compared against it, and agreed).",
+    "",
+    "Download URLs are currently UNVERSIONED, so 'defaultVersion' asserts which build we",
+    "expect the host to be serving rather than requesting it by name. If the host serves a",
+    "different build, checksum verification fails closed and the deploy stops. That is",
+    "intended. See docs/MAINTAINERS.md for how to re-capture after a CLI release."
+  ],
+  "defaultVersion": "2026.07.1",
+  "defaultDownloadBaseUrl": "https://app.behindgate.net",
+  "versions": {
+    "2026.07.1": {
+      "capturedFrom": "https://app.test.behindgate.net/downloads/",
+      "capturedAt": "2026-08-02",
+      "platforms": {
+        "linux-amd64": {
+          "archive": "bg-deploy-linux-amd64.tar.gz",
+          "binary": "bg-deploy",
+          "sha256": "ec7f35b0f0ae2fbd9c127c5c4a6e6b40f62b349adbd3fb87bbf1eecc77bc7c6e"
+        },
+        "linux-arm64": {
+          "archive": "bg-deploy-linux-arm64.tar.gz",
+          "binary": "bg-deploy",
+          "sha256": "6a02e785d6b264ffa6aef4c630f4874440ed39a23770fa125c40b59df8d303d7"
+        },
+        "darwin-amd64": {
+          "archive": "bg-deploy-darwin-amd64.tar.gz",
+          "binary": "bg-deploy",
+          "sha256": "57c7308355fc9e5311ccf311d1ac83db70e34dd6b5caf2f613c14ce283b1c15b"
+        },
+        "darwin-arm64": {
+          "archive": "bg-deploy-darwin-arm64.tar.gz",
+          "binary": "bg-deploy",
+          "sha256": "7941d71f2529d3c58c11739453369e3dd1b691b7c0bc7ec4804b8e4c1b3a0fec"
+        },
+        "windows-amd64": {
+          "archive": "bg-deploy-windows-amd64.zip",
+          "binary": "bg-deploy.exe",
+          "sha256": "bbecb649f0ba2949f18b7d0f083175ddf925d7b5db1d23849828fbbd1549b89d"
+        }
+      }
+    }
+  }
+}
