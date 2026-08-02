@@ -82,6 +82,14 @@ values — that silently drops verification for the other environment.
 > platforms. If a checksum job reports unreachability rather than a mismatch,
 > suspect the hostname before suspecting the pins.
 
+## Upstream CLI work
+
+Several limitations in this Action are really limitations of the CLI's release
+process — unversioned download URLs, no machine-readable output, checksums served
+by the host they describe. [`cli-improvements-prompt.md`](cli-improvements-prompt.md)
+is a ready-to-hand-over brief covering those, with the evidence behind each and
+acceptance criteria. Tracked here as #2 and #3.
+
 ## Why `dist/` is committed
 
 GitHub runs `dist/index.js` directly; there is no `npm install` at Action
