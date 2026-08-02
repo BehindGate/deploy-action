@@ -1,0 +1,13 @@
+node_modules/
+coverage/
+*.log
+
+# Scratch space used by the integration tests (downloaded CLI, captured uploads).
+test/.tmp/
+
+.DS_Store
+.idea/
+.vscode/
+
+# NOTE: dist/ is intentionally NOT ignored. The Action runs the bundled
+# dist/index.js directly, so it must be committed. CI verifies it stays in sync.
