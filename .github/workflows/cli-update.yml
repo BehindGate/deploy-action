@@ -8,7 +8,7 @@ name: CLI update
 #
 # This job resolves that tension: it follows upstream automatically, while every
 # move is still a reviewed commit with verified hashes. When the CLI is signed
-# (see docs/cli-improvements-prompt.md), the Action can verify a signature at
+# (see docs/app-repo-release-prompt.md), the Action can verify a signature at
 # runtime and this job -- along with the pinned table -- becomes unnecessary.
 
 on:

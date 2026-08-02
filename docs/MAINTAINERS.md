@@ -130,7 +130,7 @@ values — that silently drops verification for the other environment.
 
 Several limitations in this Action are really limitations of the CLI's release
 process — unversioned download URLs, no machine-readable output, checksums served
-by the host they describe. [`cli-improvements-prompt.md`](cli-improvements-prompt.md)
+by the host they describe. [`app-repo-release-prompt.md`](app-repo-release-prompt.md)
 is a ready-to-hand-over brief covering those, with the evidence behind each and
 acceptance criteria. Tracked here as #2 and #3.
 

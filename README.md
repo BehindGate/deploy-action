@@ -169,7 +169,7 @@ has moved past.
 Signing the releases would remove this machinery entirely — the Action could
 verify a signature at runtime and always take the current build. That is the
 highest-leverage item in
-[`docs/cli-improvements-prompt.md`](docs/cli-improvements-prompt.md).
+[`docs/app-repo-release-prompt.md`](docs/app-repo-release-prompt.md).
 
 ## Known gaps
 
