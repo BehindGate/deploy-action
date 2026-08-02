@@ -55,17 +55,23 @@ async function main() {
 
   const table = JSON.parse(fs.readFileSync(TABLE_PATH, 'utf8'));
   const version = args.version || process.env.BG_CLI_VERSION || table.defaultVersion;
-  const baseUrl = (
-    args.baseUrl ||
-    process.env.BG_DOWNLOAD_BASE_URL ||
-    table.defaultDownloadBaseUrl
-  ).replace(/\/+$/, '');
 
   const entry = table.versions[version];
   if (!entry) {
     console.error(`versions.json has no entry for ${version}`);
     process.exit(1);
   }
+
+  // Default to the host the pins were captured from, not the generic default
+  // host. A checksum only means anything relative to whoever served it, so
+  // "do these pins still describe their own source?" is the question this
+  // answers. Pass --base-url to ask it of a different environment.
+  const baseUrl = (
+    args.baseUrl ||
+    process.env.BG_DOWNLOAD_BASE_URL ||
+    entry.capturedFrom ||
+    table.defaultDownloadBaseUrl
+  ).replace(/\/+$/, '');
 
   console.log(`bg-deploy ${version} from ${baseUrl}\n`);
 
@@ -94,7 +100,7 @@ async function main() {
   }
 
   if (args.mode === 'write') {
-    entry.capturedFrom = `${baseUrl}/downloads/`;
+    entry.capturedFrom = baseUrl;
     entry.capturedAt = new Date().toISOString().slice(0, 10);
     fs.writeFileSync(TABLE_PATH, `${JSON.stringify(table, null, 2)}\n`);
     console.log(
@@ -118,7 +124,12 @@ async function main() {
   }
 
   if (failures.length) {
-    console.error(`\n${failures.length} platform(s) could not be checked.`);
+    console.error(
+      `\n${failures.length} platform(s) could not be checked against ${baseUrl}.\n` +
+        `This is a reachability problem, not a checksum mismatch: the pinned\n` +
+        `hashes were neither confirmed nor contradicted. Verify that the host\n` +
+        `exists and is reachable from here.`
+    );
     process.exit(1);
   }
 

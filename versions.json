@@ -12,16 +12,26 @@
     "These values were computed locally from downloaded archives, not copied out of the",
     "vendor's SHA256SUMS.txt (they were then compared against it, and agreed).",
     "",
+    "A checksum is only meaningful relative to the host that served it, so each version",
+    "records the host its hashes were captured from. 'capturedFrom' is both the provenance",
+    "of the pin and the default download host -- they are deliberately the same value, so",
+    "they cannot drift apart.",
+    "",
     "Download URLs are currently UNVERSIONED, so 'defaultVersion' asserts which build we",
     "expect the host to be serving rather than requesting it by name. If the host serves a",
     "different build, checksum verification fails closed and the deploy stops. That is",
-    "intended. See docs/MAINTAINERS.md for how to re-capture after a CLI release."
+    "intended. See docs/MAINTAINERS.md for how to re-capture after a CLI release.",
+    "",
+    "HOST STATUS: app.test.behindgate.net is the only host confirmed to serve the CLI.",
+    "app.behindgate.net -- the name a production deployment would be expected to use --",
+    "does not currently resolve, verified from two independent networks. Point",
+    "'defaultDownloadBaseUrl' at the production host and re-capture once it exists."
   ],
   "defaultVersion": "2026.07.1",
-  "defaultDownloadBaseUrl": "https://app.behindgate.net",
+  "defaultDownloadBaseUrl": "https://app.test.behindgate.net",
   "versions": {
     "2026.07.1": {
-      "capturedFrom": "https://app.test.behindgate.net/downloads/",
+      "capturedFrom": "https://app.test.behindgate.net",
       "capturedAt": "2026-08-02",
       "platforms": {
         "linux-amd64": {

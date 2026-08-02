@@ -48,20 +48,32 @@ BehindGate serves downloads from a different host per environment — production
 and test are not the same host — which is why `download-base-url` exists and why
 nothing hardcodes a host.
 
-> **Note for the first release.** The checksums currently in `versions.json` were
-> captured from `https://app.test.behindgate.net`, because the sandbox this
-> Action was developed in could not reach the production host (blocked at the
-> egress proxy). They have *not* been confirmed against
-> `https://app.behindgate.net`, which is the default `download-base-url`.
+Each version entry records `capturedFrom`: the host its checksums came from.
+That value is also the default download host, because a checksum only means
+anything relative to whoever served it — keeping them as one field stops them
+drifting apart. `node script/checksums.js verify` defaults to that host, so CI
+asks "do these pins still describe their own source?".
+
+> **Blocking question before tagging `v1`.** `app.behindgate.net` — the name a
+> production deployment would be expected to use — **does not resolve**. This was
+> checked from two independent networks: the development sandbox (blocked at the
+> egress proxy) and a GitHub-hosted runner, where the CI checksum job reported
+> `fetch failed` for all five platforms against it. `app.test.behindgate.net` is
+> currently the only host observed serving the CLI, and it is what
+> `defaultDownloadBaseUrl` points at.
 >
-> Before tagging `v1`, run `node script/checksums.js verify` from somewhere with
-> production access. If production serves an identical build the command passes
-> and nothing needs changing. If it reports a mismatch, production is serving a
-> different build and the table needs per-environment handling — do not simply
-> overwrite the hashes, since that would silently drop verification for one of
-> the two environments.
+> Shipping a test environment as the default for a production Action is wrong,
+> but so is defaulting to a hostname that does not exist. Confirm the real
+> production download host, then:
 >
-> The `checksums` job in CI performs exactly this check on every run.
+> ```bash
+> node script/checksums.js verify --base-url https://<production-host>
+> ```
+>
+> If it serves an identical build, set `defaultDownloadBaseUrl` and `capturedFrom`
+> to it and commit. If it serves a *different* build, the table needs a
+> per-environment dimension — do not simply overwrite the hashes, since that
+> silently drops verification for the other environment.
 
 ## Why `dist/` is committed
 

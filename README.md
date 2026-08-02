@@ -31,7 +31,9 @@ jobs:
         with:
           path: dist
           token: ${{ secrets.BEHINDGATE_TOKEN }}
-          url: https://app.behindgate.net/api/deploy
+          # Pin the endpoint rather than trusting the token's own claim.
+          # Use your environment's deploy endpoint -- see "Why you should pin url".
+          url: https://app.test.behindgate.net/api/deploy
 ```
 
 Generate a deploy token in the BehindGate dashboard under **Settings → Deploy
@@ -82,7 +84,7 @@ secret that a single compromised account can rewrite:
   with:
     path: dist
     token: ${{ secrets.BEHINDGATE_TOKEN }}
-    url: https://app.behindgate.net/api/deploy   # pinned, reviewable
+    url: https://app.test.behindgate.net/api/deploy   # pinned, reviewable
 ```
 
 If you omit `url`, the Action emits a warning explaining what it is trusting.
@@ -120,6 +122,13 @@ returned by the deploy API but never echoed, and it has no `--json` mode. This
 Action is a thin wrapper over the CLI and does not call the deploy API itself,
 so it has nothing to read. The output is declared and its parser is already in
 place, so it will populate automatically once the CLI exposes the value.
+
+**Only one download host is confirmed to exist.** `download-base-url` defaults to
+`https://app.test.behindgate.net`, which is the only host observed serving the
+CLI. `app.behindgate.net` — the name a production deployment would be expected
+to use — does not currently resolve, checked from two independent networks. If
+you deploy against a different environment, set `download-base-url` and make
+sure the pinned checksums match what that host serves.
 
 **Download URLs are unversioned.** Artifacts live at
 `/downloads/bg-deploy-<os>-<arch>.tar.gz` with no version in the path, so
