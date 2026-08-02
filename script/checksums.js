@@ -20,8 +20,51 @@
 const fs = require('node:fs');
 const path = require('node:path');
 const crypto = require('node:crypto');
+const zlib = require('node:zlib');
 
 const TABLE_PATH = path.join(__dirname, '..', 'versions.json');
+
+/**
+ * Recover the version string embedded in an archived binary.
+ *
+ * The version key in versions.json is a hand-written label, while the checksum
+ * is what actually binds the bytes. Nothing otherwise stops the two disagreeing
+ * -- and `write` updates hashes in place under the existing key, so re-capturing
+ * after a CLI release files new binaries under the old version number. The tool
+ * cache would then serve the new binary under the old cache key.
+ *
+ * Returns null when the version cannot be determined unambiguously; callers
+ * treat that as "unknown", never as a mismatch.
+ */
+function detectVersion(buffer, archiveName) {
+  let decompressed;
+
+  try {
+    if (archiveName.endsWith('.tar.gz')) {
+      decompressed = zlib.gunzipSync(buffer);
+    } else if (archiveName.endsWith('.zip')) {
+      // Single-entry zip: read the local file header and inflate the payload.
+      const signature = buffer.indexOf(Buffer.from('PK\x03\x04', 'binary'));
+      if (signature === -1) return null;
+      const method = buffer.readUInt16LE(signature + 8);
+      const nameLength = buffer.readUInt16LE(signature + 26);
+      const extraLength = buffer.readUInt16LE(signature + 28);
+      const data = buffer.subarray(signature + 30 + nameLength + extraLength);
+      decompressed = method === 0 ? data : zlib.inflateRawSync(data);
+    } else {
+      return null;
+    }
+  } catch {
+    return null;
+  }
+
+  const matches = new Set(
+    (decompressed.toString('latin1').match(/\b20\d{2}\.\d{2}\.\d+\b/g) || [])
+  );
+
+  // Exactly one candidate is a confident read; anything else is ambiguous.
+  return matches.size === 1 ? [...matches][0] : null;
+}
 
 function parseArgs(argv) {
   const args = { mode: argv[2] };
@@ -42,6 +85,7 @@ async function digestOf(url) {
   return {
     sha256: crypto.createHash('sha256').update(body).digest('hex'),
     bytes: body.length,
+    body,
   };
 }
 
@@ -77,6 +121,7 @@ async function main() {
 
   const mismatches = [];
   const failures = [];
+  const versionDrift = [];
 
   for (const [platform, artifact] of Object.entries(entry.platforms)) {
     const url = `${baseUrl}/downloads/${artifact.archive}`;
@@ -91,12 +136,40 @@ async function main() {
 
     const matches = result.sha256 === artifact.sha256;
     const mark = matches ? 'ok' : 'XX';
-    console.log(`  ${mark} ${platform.padEnd(14)} ${result.sha256}  (${result.bytes} bytes)`);
+
+    const embedded = detectVersion(result.body, artifact.archive);
+    if (embedded && embedded !== version) {
+      versionDrift.push({ platform, embedded });
+    }
+    const versionNote = embedded
+      ? embedded === version
+        ? ''
+        : `  << reports ${embedded}`
+      : '  (version undetermined)';
+
+    console.log(
+      `  ${mark} ${platform.padEnd(14)} ${result.sha256}  (${result.bytes} bytes)${versionNote}`
+    );
 
     if (!matches) {
       mismatches.push({ platform, pinned: artifact.sha256, served: result.sha256 });
       if (args.mode === 'write') artifact.sha256 = result.sha256;
     }
+  }
+
+  // A binary that disagrees with the key it is filed under is always wrong, in
+  // either mode -- and in `write` mode it means the caller is about to record a
+  // new release's hashes under the previous version's name.
+  if (versionDrift.length) {
+    console.error(
+      `\nThe binaries do not report version ${version}:\n` +
+        versionDrift.map((d) => `  ${d.platform} reports ${d.embedded}`).join('\n') +
+        `\n\nversions.json would file these bytes under the wrong version, and the\n` +
+        `tool cache keys on that version -- so runners would serve the new binary\n` +
+        `from the old cache entry. Add a "${versionDrift[0].embedded}" entry to\n` +
+        `versions.json and capture into that instead of overwriting ${version}.`
+    );
+    process.exit(1);
   }
 
   if (args.mode === 'write') {

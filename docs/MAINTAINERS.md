@@ -16,6 +16,35 @@ actually runs. Nothing else moves it.
 To repoint the major tag manually (for example after a botched release), run the
 `Release` workflow via **workflow_dispatch** with the target tag.
 
+## Versioning policy
+
+**This Action and the CLI are versioned independently, and should stay that way.**
+
+- The Action uses semver with a floating major tag: `v1.2.3`, with `v1` tracking
+  the newest `v1.x.y`. That is what Action consumers expect.
+- The CLI version is *data*, pinned in `versions.json` and selectable per-workflow
+  through the `cli-version` input.
+
+It is tempting to make them match, but they must not:
+
+- **The Action supports more than one CLI version at a time.** `versions.json` can
+  pin several, and a workflow can choose. If the Action were stamped `2026.07.1`
+  while a user set `cli-version: 2026.06.3`, its version number would be a
+  statement that is simply false.
+- **The two change for unrelated reasons.** The tool-cache bug fixed in this repo
+  had nothing to do with the CLI; a CLI patch needing no wrapper change should not
+  force an Action release. Coupling them produces a stream of no-op releases in
+  one project every time the other moves.
+- **Calendar versions are not semver.** `2026.07.1` has a leading zero in the
+  minor component, so it is invalid semver — which already broke the tool cache
+  silently (see `semverSafeVersion`). Adopting it as the Action's own version
+  would also break the floating-major-tag convention and Dependabot's ability to
+  reason about upgrades.
+
+Do state the default CLI version in each Action release note — "defaults to
+bg-deploy 2026.07.1" — so the mapping is discoverable without reading
+`versions.json`.
+
 ## Adding a new `bg-deploy` version
 
 Download URLs are unversioned, so the pin table records what the host serves.
@@ -33,6 +62,21 @@ node script/checksums.js write
 hash is the one signal that distinguishes a legitimate re-release from a
 compromised host, so it must never be updated reflexively — that is the entire
 reason the table is committed here rather than fetched at runtime.
+
+Both modes also read the version string embedded in each downloaded binary and
+refuse to continue if it disagrees with the key it is filed under. This guards
+the most likely maintenance mistake: running `write` after a CLI release records
+the *new* binaries' hashes under the *old* version number. Checksums would still
+verify — they would describe the new bytes correctly — but the tool cache keys on
+the version, so runners would serve the new binary out of the old cache entry.
+When the guard fires, add a new version entry rather than overwriting the
+existing one:
+
+```
+The binaries do not report version 2026.06.9:
+  linux-amd64 reports 2026.07.1
+  ...
+```
 
 To add a genuinely new version, copy the existing block in
 [`versions.json`](../versions.json) under the new version key, then run
