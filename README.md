@@ -97,6 +97,19 @@ Deploying to https://app.behindgate.com/api/deploy
 Copy that value into `url`. From then on the destination is fixed by your
 workflow rather than by the token.
 
+**Write it as a literal.** You can also reference a repository or organisation
+variable (`url: ${{ vars.BEHINDGATE_URL }}`), which is convenient when one
+workflow targets several environments — but be clear about the trade-off. A
+literal in the workflow file is protected by code review and branch protection.
+A variable moves the value back into mutable repository settings, so whoever can
+change the secret can often change the variable too, and the pin stops being a
+pin. Prefer the literal; reach for a variable only when you genuinely need the
+indirection.
+
+Never put the endpoint in a *secret*. It is not sensitive, and storing it beside
+the token means a single compromised store controls both the credential and the
+destination — which looks like pinning while providing none of its benefit.
+
 If you omit `url`, the Action emits a warning explaining what it is trusting.
 
 ## How the CLI is verified

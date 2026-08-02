@@ -128,7 +128,69 @@ integrations; the human line is what someone reading a log actually wants.
 - Existing consumers that parse the current success line keep working — treat the
   URL as an addition, not a reformat.
 
-## Priority 3 — Sign the releases
+## Priority 3 — Endpoint pinning: env var, precedence, and mismatch detection
+
+**Problem.** `--url` is currently the only way to pin the deploy endpoint.
+Verified by testing: exporting `BEHINDGATE_URL` has no effect — the CLI still
+routes to the claim inside the token. (Token claiming a dead port, `BEHINDGATE_URL`
+pointing at a live server: the CLI tried the dead port and failed.)
+
+**Be precise about what an env var buys.** Accepting `BEHINDGATE_URL` is worth
+doing, but it is an *ergonomics* change, not a security one, and the distinction
+matters enough to state in the docs.
+
+The protection `--url` provides comes from *where the value lives and who can
+change it* — a workflow file under version control, code review and branch
+protection — not from which channel it arrives on. If an operator sets
+`BEHINDGATE_URL` as a CI secret next to `BEHINDGATE_TOKEN`, both live in the same
+mutable store, and anyone who can rewrite one can rewrite the other. That
+configuration looks like pinning while providing none of its benefit, which is
+worse than not pinning at all, because it is believed.
+
+The real reason to add it is portability: Bitbucket Pipes and GitLab components
+are configured through environment variables, not argv, so an env var is the
+idiomatic interface there and will materially increase how many people pin at
+all. Document it as "convenient", and keep "put the endpoint in reviewed
+configuration" as the security advice.
+
+**Do this.**
+
+1. **Accept `BEHINDGATE_URL`** as an alternative to `--url`.
+
+2. **Make `--url` win over `BEHINDGATE_URL`.** This one *is* a security
+   requirement. If the environment could override an explicit flag, anyone able
+   to inject an environment variable into the job could silently redirect a
+   deploy that its author had deliberately pinned in the command line. Precedence
+   must be: `--url` flag > `BEHINDGATE_URL` > token claim.
+
+3. **Report when the pinned endpoint disagrees with the token's claim.** This is
+   the highest-value change in this section. Today, `--url` silently overrides a
+   conflicting claim — but that disagreement is *exactly* the signal that a token
+   has been swapped for one pointing elsewhere. Discarding it silently throws away
+   the only evidence of an attempted redirect.
+
+   At minimum, warn:
+
+   ```
+   warning: token claims endpoint https://evil.example/api/deploy
+            but deploying to https://app.behindgate.com/api/deploy (pinned)
+   ```
+
+   Better, offer `--require-url-match` (or `BEHINDGATE_REQUIRE_URL_MATCH=1`) to
+   make the mismatch fatal, so a CI job fails loudly rather than deploying
+   correctly while an attacker learns their swapped token went unnoticed.
+
+**Acceptance criteria.**
+
+- `BEHINDGATE_URL` pins the endpoint when `--url` is absent.
+- `--url` overrides `BEHINDGATE_URL`; a test covers that precedence explicitly.
+- A pinned endpoint differing from the token's claim produces a warning naming
+  both values.
+- `--require-url-match` turns that warning into a non-zero exit.
+- Documentation describes the env var as convenience and continues to recommend
+  pinning in reviewed configuration.
+
+## Priority 4 — Sign the releases
 
 **Problem.** `SHA256SUMS.txt` is served by the same host as the binaries it
 describes. It therefore proves only that a download was not truncated in
@@ -161,7 +223,7 @@ be updated in lockstep on every CLI release.
 This is what lets the downstream integrations drop their pinned checksum tables
 and verify a signature instead.
 
-## Priority 4 — Make exit codes consistent
+## Priority 5 — Make exit codes consistent
 
 **Problem.** Observed behaviour of 2026.07.1:
 
@@ -198,7 +260,7 @@ Also validate `<path>` before the token so path errors report themselves.
 - `--help` documents the full set.
 - A non-existent `<path>` reports a path error regardless of token validity.
 
-## Priority 5 — Small fixes
+## Priority 6 — Small fixes
 
 - **`--help` exits 2.** Both `--help` and `-h` print usage and exit **2**.
   Requesting help successfully is not an error; it should exit 0. Usage printed
