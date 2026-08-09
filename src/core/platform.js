@@ -36,6 +36,9 @@ const ARCH_BY_NODE_ARCH = {
  * Platforms the vendor actually publishes. Anything outside this set must fail
  * loudly rather than guess at an archive name that would 404 (or worse, 403 to
  * an SPA fallback that returns HTML with a 200).
+ *
+ * windows-arm64 was added upstream in 2026.8.x; before that it was the one
+ * combination that resolved cleanly from the tables above but had no artifact.
  */
 const SUPPORTED = Object.freeze([
   'linux-amd64',
@@ -43,6 +46,7 @@ const SUPPORTED = Object.freeze([
   'darwin-amd64',
   'darwin-arm64',
   'windows-amd64',
+  'windows-arm64',
 ]);
 
 /**
@@ -62,8 +66,8 @@ function resolvePlatform(nodePlatform = process.platform, nodeArch = process.arc
 
   const key = `${os}-${arch}`;
 
-  // windows-arm64 resolves cleanly from the tables above but is not published,
-  // so the membership check below is what actually keeps us honest.
+  // Belt and braces: the tables above can resolve a combination the vendor does
+  // not publish, and guessing an archive name is worse than failing.
   if (!SUPPORTED.includes(key)) {
     throw new UnsupportedPlatformError(nodePlatform, nodeArch, SUPPORTED);
   }

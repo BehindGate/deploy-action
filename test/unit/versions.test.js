@@ -96,25 +96,51 @@ describe('semverSafeVersion', () => {
 });
 
 describe('downloadUrl', () => {
-  test('builds the archive URL', () => {
+  // Versioned paths are what make cli-version a real pin rather than an
+  // assertion about whatever the host currently serves.
+  test('requests the version by name', () => {
     assert.equal(
-      versions.downloadUrl('https://app.behindgate.net', 'bg-deploy-linux-amd64.tar.gz'),
-      'https://app.behindgate.net/downloads/bg-deploy-linux-amd64.tar.gz'
+      versions.downloadUrl('https://app.behindgate.com', '2026.8.3', 'bg-deploy-linux-amd64.tar.gz'),
+      'https://app.behindgate.com/downloads/2026.8.3/bg-deploy-linux-amd64.tar.gz'
     );
   });
 
   test('tolerates a trailing slash', () => {
     assert.equal(
-      versions.downloadUrl('https://app.behindgate.net/', 'x.tar.gz'),
-      'https://app.behindgate.net/downloads/x.tar.gz'
+      versions.downloadUrl('https://app.behindgate.com/', '2026.8.3', 'x.tar.gz'),
+      'https://app.behindgate.com/downloads/2026.8.3/x.tar.gz'
     );
   });
 
   test('honours a non-production host', () => {
     // Hosts are per-environment; nothing may hardcode production.
     assert.equal(
-      versions.downloadUrl('https://app.test.behindgate.net', 'x.tar.gz'),
-      'https://app.test.behindgate.net/downloads/x.tar.gz'
+      versions.downloadUrl('https://app.test.behindgate.net', '2026.8.3', 'x.tar.gz'),
+      'https://app.test.behindgate.net/downloads/2026.8.3/x.tar.gz'
     );
+  });
+
+  test('indexUrl points at the release index', () => {
+    assert.equal(
+      versions.indexUrl('https://app.behindgate.com/'),
+      'https://app.behindgate.com/downloads/index.json'
+    );
+  });
+});
+
+describe('minimum supported CLI version', () => {
+  // The Action reads --json, which does not exist before 2026.8.0, and earlier
+  // releases used a different exit-code scheme. A pre-2026.8.0 entry would
+  // install cleanly and then fail at runtime.
+  test('no pinned version predates the --json contract', () => {
+    for (const version of versions.knownVersions()) {
+      const normalized = versions.semverSafeVersion(version);
+      assert.ok(normalized, `${version} must be semver-normalisable`);
+      const [major, minor] = normalized.split('.').map(Number);
+      assert.ok(
+        major > 2026 || (major === 2026 && minor >= 8),
+        `${version} predates 2026.8.0 and does not support --json`
+      );
+    }
   });
 });

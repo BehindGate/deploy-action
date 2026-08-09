@@ -47,15 +47,31 @@ bg-deploy 2026.07.1" — so the mapping is discoverable without reading
 
 ## Adding a new `bg-deploy` version
 
-Download URLs are unversioned, so the pin table records what the host serves.
+Downloads are versioned and immutable, and the vendor publishes a release index
+at `/downloads/index.json`, so adopting a new release is a single command.
 
 ```bash
-# Inspect what is being served right now.
+# Confirm the pinned release still verifies.
 node script/checksums.js verify
 
-# Record it.
-node script/checksums.js write
+# Adopt whatever the index reports as latest, adding a new entry.
+node script/checksums.js bump
 ```
+
+`bump` reads the index, downloads every platform of the new version, hashes them
+locally, checks each binary reports the version it is being filed under, and adds
+a **new** entry — it never overwrites an existing one, so a superseded version
+stays selectable through `cli-version` after a bad release. `.github/workflows/cli-update.yml`
+runs it weekly and opens a pull request.
+
+**Minimum version 2026.8.0.** This Action reads the CLI's `--json` output, which
+earlier releases do not have, and pre-2026.8.0 used a different exit-code scheme.
+Do not add older entries: they would install cleanly and then fail at runtime.
+A unit test enforces this.
+
+`write` re-captures an existing entry in place. Now that published versions are
+immutable it should almost never be needed — a hash that has changed under a
+versioned path is a red flag, not a routine re-release.
 
 `write` updates the checksums for `defaultVersion` in place and refreshes
 `capturedFrom` / `capturedAt`. **Review the diff before committing.** A changed
@@ -105,12 +121,9 @@ The two known environments are:
 | Production | `https://app.behindgate.com` — note **.com**, not `.net` |
 | Test | `https://app.test.behindgate.net` |
 
-For 2026.07.1 both serve **byte-identical** archives: every platform was
-downloaded from each host and hashed locally, and all ten digests agree. One pin
-set therefore covers both, which is why `alsoVerifiedAgainst` records the second
-host rather than the table carrying two sets of hashes.
-
-Check that assumption still holds whenever a new CLI version is pinned:
+The pinned checksums for 2026.8.3 were captured from production. The test
+environment historically served byte-identical archives, but that has not been
+re-confirmed for this release — check it if you rely on it:
 
 ```bash
 node script/checksums.js verify --base-url https://app.behindgate.com

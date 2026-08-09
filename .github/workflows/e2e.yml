@@ -59,7 +59,8 @@ jobs:
             echo "::error::The deploy succeeded but release-id was empty."
             exit 1
           fi
-          echo "Deployed release $RELEASE_ID"
-          # `url` is expected to be empty until bg-deploy prints the deployed
-          # address; see "Known gaps" in the README. Reported, not asserted.
-          echo "url output: '${URL:-<empty>}'"
+          if [ -z "$URL" ]; then
+            echo "::error::The deploy succeeded but the url output was empty."
+            exit 1
+          fi
+          echo "Deployed release $RELEASE_ID to $URL"

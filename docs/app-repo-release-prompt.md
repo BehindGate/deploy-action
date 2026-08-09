@@ -30,6 +30,28 @@ host, and reading metadata out of the published archives. Nothing here came from
 reading source. **Re-verify anything you act on** — some of it may already have
 changed, and some may be wrong about internals.
 
+## Status as of 2026-08-09 (bg-deploy 2026.8.3)
+
+Most of this brief has shipped. Verified against the published artifacts:
+
+| Item | Status |
+| --- | --- |
+| Clean, tagged builds | **done** — `vcs.modified=false`, full SHA in `--version` |
+| Versioned, immutable URLs + `index.json` | **done** |
+| Valid semver version string | **done** — `2026.8.3` |
+| `--json` and the deployed URL in output | **done** — stdout is pure JSON, progress on stderr |
+| `BEHINDGATE_URL`, flag precedence, mismatch detection | **done** — mismatch is fatal (exit 2), stricter than proposed |
+| Unified exit codes | **done** — credential problems are all exit 2 |
+| Stripped binaries | **done** — download halved, 5.0 MB → 2.5 MB |
+| `windows-arm64` | **done** |
+| `--help` exits 0 | **done** |
+| **Signed releases** | **outstanding** — `.sig` paths still 403 |
+
+**What remains is signing**, and it is now the only thing standing between the
+integrations and dropping their pinned checksum tables. The section below is
+unchanged and still applies; everything above it is retained as a record of what
+was asked for and why.
+
 ## Where to start
 
 The single most important item is that **the published binary was built from a

@@ -28291,62 +28291,82 @@ module.exports = {
  *
  * Pure, dependency-free: no `@actions/*` imports.
  *
- * The mapping below was established by running the real CLI (2026.07.1) rather
- * than read off the documentation, and the two differ in a way that matters:
+ * The mapping below was established by running the real CLI (2026.8.3), not read
+ * off documentation. It changed in 2026.8.x and the change matters:
  *
- *   exit 2 (usage)   - missing/empty BEHINDGATE_TOKEN, no <path>, unknown flag
- *   exit 1 (runtime) - malformed token ("not a JWT"), bad base64url payload,
- *                      network failure, non-2xx from the deploy API
+ *   exit 2 (configuration) - missing OR malformed BEHINDGATE_TOKEN, no <path>,
+ *                            unknown flag, and endpoint mismatch between the
+ *                            pinned URL and the token's claim
+ *   exit 1 (runtime)       - network failure, non-2xx from the deploy API,
+ *                            anything that goes wrong once the deploy is under way
  *
- * Note that an *absent* token exits 2 while a *malformed* token exits 1. Both
- * are credential problems, so neither message may assume "usage error" means
- * the caller mistyped a flag.
+ * Previously a *malformed* token exited 1 while a *missing* one exited 2, so the
+ * two halves of the same problem landed in different buckets. They are now both
+ * 2, which is what makes the code usable: 2 means "fix your configuration",
+ * 1 means "the deploy itself failed".
  */
 
 const EXIT_SUCCESS = 0;
 const EXIT_RUNTIME = 1;
-const EXIT_USAGE = 2;
+const EXIT_CONFIG = 2;
+
+// Retained under the old name so nothing silently reads a stale meaning.
+const EXIT_USAGE = EXIT_CONFIG;
 
 /**
  * Turn an exit code into an actionable failure message.
  *
- * The Action builds argv itself, so a usage error almost never means a mistyped
- * flag -- overwhelmingly it means the `token` input resolved to an empty string
- * (an unset secret interpolates to "" rather than failing the workflow). The
- * message says so instead of pointing at CLI syntax the user never wrote.
- *
  * @param {number} code
- * @param {{tokenLooksEmpty?: boolean, path?: string}} [context]
+ * @param {{path?: string, urlPinned?: boolean, cliMessage?: string|null}} [context]
  * @returns {{title: string, detail: string}}
  */
 function describeExitCode(code, context = {}) {
-  const { tokenLooksEmpty = false, path } = context;
+  const { path, urlPinned = false, cliMessage = null } = context;
+  const reported = cliMessage ? `\nbg-deploy reported: ${cliMessage}\n` : '';
 
   if (code === EXIT_SUCCESS) {
     return { title: 'bg-deploy succeeded', detail: '' };
   }
 
-  if (code === EXIT_USAGE) {
-    const lines = [
-      'bg-deploy rejected its invocation (exit 2, usage error).',
-      '',
-      'This Action builds the command line itself, so the usual cause is an ' +
-        'empty `token` input: a secret that is not set on the repository ' +
-        'interpolates to an empty string rather than failing the workflow.',
-      '',
-      'Check that:',
-      '  - the secret referenced by `token:` exists and is non-empty ' +
-        '(for example `${{ secrets.BEHINDGATE_TOKEN }}`),',
-      '  - the workflow is not running from a fork, where secrets are ' +
-        'unavailable by design,',
-    ];
+  if (code === EXIT_CONFIG) {
+    const lines = ['bg-deploy rejected the request as misconfigured (exit 2).', reported];
+
+    // This Action validates the token's shape and the path before invoking the
+    // CLI, so the causes it could have caught are already ruled out. What is
+    // left is overwhelmingly the endpoint check -- and that one is security
+    // relevant, so it leads.
+    if (urlPinned) {
+      lines.push(
+        'Because this Action already checks the token format and the path ' +
+          'before running, the most likely cause is that the `url` input does ' +
+          'not match the endpoint your token was minted for. Since 2026.8.x the ' +
+          'CLI refuses to deploy on that mismatch rather than silently ' +
+          'preferring one of them.',
+        '',
+        'That refusal is the desired behaviour: a token whose endpoint claim ' +
+          'disagrees with your pinned `url` is exactly what a swapped secret ' +
+          'looks like. Check that:',
+        '  - `url` names the endpoint shown when you deploy without it, and',
+        '  - the token really was issued for that environment ' +
+          '(a test-environment token cannot deploy to production).'
+      );
+    } else {
+      lines.push(
+        'Check that:',
+        '  - the secret referenced by `token:` exists and is non-empty ' +
+          '(an unset secret interpolates to an empty string rather than ' +
+          'failing the workflow),',
+        '  - the workflow is not running from a fork, where secrets are ' +
+          'unavailable by design,',
+        '  - the token has not expired or been revoked.'
+      );
+    }
+
     if (path) {
-      lines.push(`  - \`path:\` (${path}) names a folder or a .zip file.`);
+      lines.push('', `The deployed path was: ${path}`);
     }
-    if (tokenLooksEmpty) {
-      lines.push('', 'The `token` input was empty when this step started.');
-    }
-    return { title: 'Invalid bg-deploy invocation', detail: lines.join('\n') };
+
+    return { title: 'bg-deploy configuration error', detail: lines.join('\n') };
   }
 
   if (code === EXIT_RUNTIME) {
@@ -28354,15 +28374,14 @@ function describeExitCode(code, context = {}) {
       title: 'bg-deploy failed',
       detail: [
         'bg-deploy failed while running (exit 1, runtime failure).',
+        reported,
+        'This is a failure of the deploy itself rather than of its configuration:',
+        '  - the deploy endpoint rejected the release,',
+        '  - the runner could not reach the endpoint, or',
+        '  - the upload was interrupted.',
         '',
-        'Common causes, in rough order of likelihood:',
-        '  - the token is not a well-formed JWT ("error: not a JWT"), for ' +
-          'example a truncated or wrapped secret,',
-        '  - the token is expired or was revoked,',
-        '  - the deploy endpoint rejected the release (check the CLI output above),',
-        '  - the runner could not reach the endpoint.',
-        '',
-        'The CLI output above carries the specific error.',
+        'The CLI output above carries the specific error. Re-running is often ' +
+          'worthwhile, since these are frequently transient.',
       ].join('\n'),
     };
   }
@@ -28371,13 +28390,15 @@ function describeExitCode(code, context = {}) {
     title: 'bg-deploy exited unexpectedly',
     detail:
       `bg-deploy exited with code ${code}, which is outside its documented ` +
-      `range (0 success, 1 runtime failure, 2 usage error). Treating as a failure.`,
+      `range (0 success, 1 runtime failure, 2 configuration error). ` +
+      `Treating as a failure.${reported}`,
   };
 }
 
 module.exports = {
   EXIT_SUCCESS,
   EXIT_RUNTIME,
+  EXIT_CONFIG,
   EXIT_USAGE,
   describeExitCode,
 };
@@ -28392,104 +28413,107 @@ module.exports = {
 
 
 /**
- * Parsing of bg-deploy's console output.
+ * Parsing of bg-deploy's `--json` output.
  *
  * Pure, dependency-free: no `@actions/*` imports.
  *
- * Reference output from a successful run (bg-deploy 2026.07.1):
+ * From 2026.8.0 the CLI has a structured output mode: `--json` writes exactly
+ * one object to stdout and sends all human-readable progress to stderr. That is
+ * the contract this Action reads. Earlier releases had no such mode and never
+ * printed the deployed address at all, which is why the `url` output used to
+ * ship empty; parsing console prose was the only option and broke on any wording
+ * change.
  *
- *   Deploying to https://app.example.behindgate.net/api/deploy
- *     from public
- *   Requesting a release…
- *   Uploading 420 bytes…
- *   Waiting for extraction…
- *   Publishing…
- *   ✓ Deployed. Release rel_01J8ZQ is live.
+ * Reference stdout from a successful run (bg-deploy 2026.8.3):
+ *
+ *   {"releaseId":"rel_01J8ZQ","url":"https://demo.behindgate.com/my-app/",
+ *    "endpoint":"https://app.behindgate.com/api/deploy","status":"published",
+ *    "version":"2026.8.3"}
  */
 
-/** Strip ANSI SGR sequences so parsing survives a colourising CLI. */
-// eslint-disable-next-line no-control-regex
-const ANSI = /\[[0-9;]*m/g;
+/** Strip ANSI SGR sequences. Kept for stderr, which may be colourised. */
+const ANSI = /\[[0-9;]*m/g;
 
 function stripAnsi(text) {
   return String(text ?? '').replace(ANSI, '');
 }
 
 /**
- * The release identifier from the success line.
- * Format string in the binary: " Deployed. Release %s is live."
- */
-function parseReleaseId(output) {
-  const match = stripAnsi(output).match(/Deployed\.\s+Release\s+(\S+?)\s+is live/);
-  return match ? match[1] : null;
-}
-
-/**
- * The deploy API endpoint the CLI actually used.
+ * Pull the JSON object out of a stdout buffer.
  *
- * Worth surfacing: when `url` is not pinned this reflects the endpoint claimed
- * by the token, which is the value an attacker who can rewrite the secret would
- * have changed. It is the API endpoint, NOT the public address of the site.
+ * Tolerant of surrounding blank lines and of a stray non-JSON line, so a future
+ * CLI that prints something extra does not cost us the release id. Scans for the
+ * last line that parses as an object, since the result object is emitted last.
  */
-function parseEndpoint(output) {
-  const match = stripAnsi(output).match(/^Deploying to\s+(\S+)/m);
-  return match ? match[1] : null;
-}
+function extractJson(stdout) {
+  const text = stripAnsi(stdout).trim();
+  if (!text) return null;
 
-/**
- * The public URL of the deployed site, if the CLI printed one.
- *
- * As of bg-deploy 2026.07.1 it does NOT: the success line carries only the
- * release id, and the `url` field the API returns is never echoed. This
- * deliberately returns null rather than inventing a URL from the endpoint --
- * a wrong link in a job summary is worse than no link.
- *
- * The patterns below are the shapes a future CLI would plausibly use, so the
- * `url` output starts working the moment upstream adds it. Tracked upstream;
- * see README "Known gaps".
- */
-function parseLiveUrl(output) {
-  const clean = stripAnsi(output);
-  const patterns = [
-    /(?:is )?live at\s+(https?:\/\/\S+?)[\s.]*$/im,
-    /(?:available|deployed) at\s+(https?:\/\/\S+?)[\s.]*$/im,
-    /^\s*(?:URL|Visit):\s*(https?:\/\/\S+?)[\s.]*$/im,
-  ];
+  const candidates = [text, ...text.split('\n').reverse()];
 
-  for (const pattern of patterns) {
-    const match = clean.match(pattern);
-    if (match) return match[1];
+  for (const candidate of candidates) {
+    const trimmed = candidate.trim();
+    if (!trimmed.startsWith('{')) continue;
+    try {
+      const parsed = JSON.parse(trimmed);
+      if (parsed && typeof parsed === 'object' && !Array.isArray(parsed)) {
+        return parsed;
+      }
+    } catch {
+      // Not this line; keep looking.
+    }
   }
 
   return null;
 }
 
-/** True when the CLI printed its success line. */
-function isSuccessOutput(output) {
-  return /Deployed\.\s+Release\s+\S+\s+is live/.test(stripAnsi(output));
+/**
+ * Parse a successful `--json` run.
+ *
+ * Returns null when nothing usable could be read, so callers can warn rather
+ * than publish empty outputs as if they were real. Absent individual fields
+ * come back as null rather than undefined, so the shape is stable.
+ *
+ * @returns {{releaseId: string|null, url: string|null, endpoint: string|null, status: string|null, version: string|null}|null}
+ */
+function parseDeployJson(stdout) {
+  const parsed = extractJson(stdout);
+  if (!parsed) return null;
+
+  const str = (value) => (typeof value === 'string' && value ? value : null);
+
+  return {
+    releaseId: str(parsed.releaseId),
+    url: str(parsed.url),
+    endpoint: str(parsed.endpoint),
+    status: str(parsed.status),
+    version: str(parsed.version),
+  };
 }
 
 /**
- * Everything worth extracting from a run, in one pass.
+ * Pull a message out of the CLI's error output.
  *
- * @returns {{releaseId: string|null, endpoint: string|null, url: string|null, succeeded: boolean}}
+ * `--json` emits `{"error":{"code":"...","message":"..."}}` on failure, but a
+ * failure early enough in startup may still be plain text on stderr, so fall
+ * back to the first `error:` line.
  */
-function parseDeployOutput(output) {
-  return {
-    releaseId: parseReleaseId(output),
-    endpoint: parseEndpoint(output),
-    url: parseLiveUrl(output),
-    succeeded: isSuccessOutput(output),
-  };
+function parseErrorMessage({ stdout = '', stderr = '' } = {}) {
+  const parsed = extractJson(stdout);
+  if (parsed && parsed.error && typeof parsed.error === 'object') {
+    const { code, message } = parsed.error;
+    if (message) return code ? `${message} (${code})` : String(message);
+  }
+
+  const match = stripAnsi(stderr).match(/^\s*error:\s*(.+)$/m);
+  return match ? match[1].trim() : null;
 }
 
 module.exports = {
   stripAnsi,
-  parseReleaseId,
-  parseEndpoint,
-  parseLiveUrl,
-  isSuccessOutput,
-  parseDeployOutput,
+  extractJson,
+  parseDeployJson,
+  parseErrorMessage,
 };
 
 
@@ -28537,6 +28561,9 @@ const ARCH_BY_NODE_ARCH = {
  * Platforms the vendor actually publishes. Anything outside this set must fail
  * loudly rather than guess at an archive name that would 404 (or worse, 403 to
  * an SPA fallback that returns HTML with a 200).
+ *
+ * windows-arm64 was added upstream in 2026.8.x; before that it was the one
+ * combination that resolved cleanly from the tables above but had no artifact.
  */
 const SUPPORTED = Object.freeze([
   'linux-amd64',
@@ -28544,6 +28571,7 @@ const SUPPORTED = Object.freeze([
   'darwin-amd64',
   'darwin-arm64',
   'windows-amd64',
+  'windows-arm64',
 ]);
 
 /**
@@ -28563,8 +28591,8 @@ function resolvePlatform(nodePlatform = process.platform, nodeArch = process.arc
 
   const key = `${os}-${arch}`;
 
-  // windows-arm64 resolves cleanly from the tables above but is not published,
-  // so the membership check below is what actually keeps us honest.
+  // Belt and braces: the tables above can resolve a combination the vendor does
+  // not publish, and guessing an archive name is worse than failing.
   if (!SUPPORTED.includes(key)) {
     throw new UnsupportedPlatformError(nodePlatform, nodeArch, SUPPORTED);
   }
@@ -28693,13 +28721,24 @@ function semverSafeVersion(version) {
 /**
  * Build the download URL for an archive.
  *
+ * Versioned and immutable: `/downloads/<version>/<archive>`. Until 2026.8.x the
+ * vendor published only unversioned paths, which meant a pinned checksum was a
+ * pin against a moving target -- the host could serve different bytes under the
+ * same name at any time. Requesting the version by name makes `cli-version` an
+ * actual pin, and makes rollback to a previous release possible.
+ *
  * The base URL is a parameter rather than a constant because BehindGate serves
  * downloads from a different host per environment (production and test are not
  * the same host), so hardcoding one would break every non-production user.
  */
-function downloadUrl(baseUrl, archive) {
+function downloadUrl(baseUrl, version, archive) {
   const trimmed = String(baseUrl).replace(/\/+$/, '');
-  return `${trimmed}/downloads/${archive}`;
+  return `${trimmed}/downloads/${version}/${archive}`;
+}
+
+/** URL of the published release index (`{latest, versions: [...]}`). */
+function indexUrl(baseUrl) {
+  return `${String(baseUrl).replace(/\/+$/, '')}/downloads/index.json`;
 }
 
 module.exports = {
@@ -28710,6 +28749,7 @@ module.exports = {
   resolveArtifact,
   semverSafeVersion,
   downloadUrl,
+  indexUrl,
   UnknownVersionError,
   UnknownPlatformError,
 };
@@ -28743,7 +28783,7 @@ const tc = __nccwpck_require__(3472);
 const { resolvePlatform } = __nccwpck_require__(3878);
 const versions = __nccwpck_require__(2200);
 const { verifyFileChecksum } = __nccwpck_require__(8226);
-const { parseDeployOutput } = __nccwpck_require__(4234);
+const { parseDeployJson, parseErrorMessage } = __nccwpck_require__(4234);
 const { describeExitCode, EXIT_SUCCESS } = __nccwpck_require__(6938);
 
 const TOOL_NAME = 'bg-deploy';
@@ -28768,7 +28808,7 @@ async function acquireCli({ version, platform, baseUrl }) {
     return path.join(cached, artifact.binary);
   }
 
-  const url = versions.downloadUrl(baseUrl, artifact.archive);
+  const url = versions.downloadUrl(baseUrl, version, artifact.archive);
   core.info(`Downloading bg-deploy ${version} (${platform}) from ${url}`);
 
   const archivePath = await tc.downloadTool(url);
@@ -28891,9 +28931,8 @@ async function writeSummary({ releaseId, url, endpoint, deployPath, version, pin
 
     if (!url) {
       summary.addRaw(
-        'The deployed address is not shown because bg-deploy does not print it. ' +
-          'This Action reads outputs from the CLI rather than calling the deploy ' +
-          'API itself, so it has nothing to link here yet.',
+        'No deployed address was reported by the CLI, so there is nothing to ' +
+          'link. The deploy itself succeeded.',
         true
       );
     }
@@ -28901,9 +28940,9 @@ async function writeSummary({ releaseId, url, endpoint, deployPath, version, pin
     if (!pinned) {
       summary.addRaw(
         '<strong>Endpoint not pinned.</strong> The upload target came from the ' +
-          "token's own claim. Set the <code>url</code> input to pin it, so a " +
-          'swapped secret cannot redirect the build elsewhere while this job ' +
-          'still reports success.',
+          "token's own claim. Set the <code>url</code> input to pin it: the CLI " +
+          'then refuses to deploy when a token claims a different endpoint, ' +
+          'instead of quietly sending the build wherever the token says.',
         true
       );
     }
@@ -28936,7 +28975,7 @@ async function run() {
   const platform = resolvePlatform();
   const binary = await acquireCli({ version, platform, baseUrl });
 
-  const args = ['-y'];
+  const args = ['-y', '--json'];
   if (url) {
     args.push('--url', url);
   } else {
@@ -28944,58 +28983,75 @@ async function run() {
       'No `url` input set, so the deploy endpoint comes from the token itself. ' +
         'A token is both a credential and a routing instruction: anyone who can ' +
         'change the secret can redirect this upload while the job still reports ' +
-        'success. Pin the endpoint with `url:` to remove that risk.'
+        'success. Pin the endpoint with `url:` and the CLI will refuse to deploy ' +
+        'if a token turns up claiming a different one.'
     );
   }
   args.push(deployPath);
 
+  // stdout and stderr must stay separate: under --json, stdout carries exactly
+  // one JSON object and every human-readable progress line goes to stderr.
+  // Merging them would leave the result unparseable.
+  let stdout = '';
+  let stderr = '';
+
   // The token goes in the environment, never on the command line, so it cannot
   // surface in a process listing or in the command echo of the step log.
-  let output = '';
-  const capture = (data) => {
-    output += data.toString();
-  };
-
   const exitCode = await exec.exec(binary, args, {
     ignoreReturnCode: true,
+    silent: true,
     env: { ...process.env, BEHINDGATE_TOKEN: token },
-    listeners: { stdout: capture, stderr: capture },
+    listeners: {
+      stdout: (data) => {
+        stdout += data.toString();
+      },
+      stderr: (data) => {
+        const text = data.toString();
+        stderr += text;
+        // Echo the CLI's progress so the step log still reads normally.
+        process.stderr.write(text);
+      },
+    },
   });
 
   if (exitCode !== EXIT_SUCCESS) {
-    const { title, detail } = describeExitCode(exitCode, { path: deployPath });
+    const { title, detail } = describeExitCode(exitCode, {
+      path: deployPath,
+      urlPinned: Boolean(url),
+      cliMessage: parseErrorMessage({ stdout, stderr }),
+    });
     core.setFailed(`${title}\n\n${detail}`);
     return;
   }
 
-  const parsed = parseDeployOutput(output);
+  const parsed = parseDeployJson(stdout);
 
-  if (!parsed.releaseId) {
+  if (!parsed) {
     core.warning(
-      'bg-deploy reported success but no release id could be parsed from its ' +
-        'output. The `release-id` output will be empty. This usually means the ' +
-        'CLI changed its output format; please open an issue.'
+      'bg-deploy reported success but its --json output could not be parsed, ' +
+        'so the `release-id` and `url` outputs will be empty. This usually ' +
+        'means the CLI changed its output contract; please open an issue.'
     );
   }
 
-  core.setOutput('release-id', parsed.releaseId || '');
-  core.setOutput('url', parsed.url || '');
+  const releaseId = parsed?.releaseId || '';
+  const deployedUrl = parsed?.url || '';
 
-  if (!parsed.url) {
-    core.info(
-      'The `url` output is empty: bg-deploy prints only the release id on ' +
-        'success, and this Action does not call the deploy API itself.'
-    );
-  }
+  core.setOutput('release-id', releaseId);
+  core.setOutput('url', deployedUrl);
 
-  core.info(`Deployed release ${parsed.releaseId || '(unknown)'}`);
+  core.info(
+    deployedUrl
+      ? `Deployed release ${releaseId || '(unknown)'} to ${deployedUrl}`
+      : `Deployed release ${releaseId || '(unknown)'}`
+  );
 
   await writeSummary({
-    releaseId: parsed.releaseId,
-    url: parsed.url,
-    endpoint: parsed.endpoint,
+    releaseId,
+    url: deployedUrl,
+    endpoint: parsed?.endpoint,
     deployPath,
-    version,
+    version: parsed?.version || version,
     pinned: Boolean(url),
   });
 }
@@ -30902,7 +30958,7 @@ module.exports = parseParams
 /***/ ((module) => {
 
 "use strict";
-module.exports = /*#__PURE__*/JSON.parse('{"comment":["Pinned SHA256 checksums for the bg-deploy CLI, keyed by version and platform.","","WHY THIS FILE EXISTS: the vendor publishes a SHA256SUMS.txt next to the binaries,","but it is served by the same host as the binaries themselves. It therefore proves","only that a download was not truncated in transit -- anyone able to serve a modified","binary can serve a matching checksum beside it. A hash committed to this repository","is the part that host cannot rewrite: changing it requires a commit that shows up in","git history and in code review.","","These values were computed locally from downloaded archives, not copied out of the","vendor\'s SHA256SUMS.txt (they were then compared against it, and agreed).","","A checksum is only meaningful relative to the host that served it, so each version","records the host its hashes were captured from. \'capturedFrom\' is both the provenance","of the pin and the default download host -- they are deliberately the same value, so","they cannot drift apart.","","Download URLs are currently UNVERSIONED, so \'defaultVersion\' asserts which build we","expect the host to be serving rather than requesting it by name. If the host serves a","different build, checksum verification fails closed and the deploy stops. That is","intended. See docs/MAINTAINERS.md for how to re-capture after a CLI release.","","HOSTS: production is app.behindgate.com (.com, not .net). For 2026.07.1 it serves","byte-identical archives to the test environment at app.test.behindgate.net -- every","platform was downloaded from both and hashed locally, and all ten digests agree. One","pin set therefore covers both environments. Should a future release diverge between","them, this table needs a per-environment dimension rather than one set of hashes."],"defaultVersion":"2026.07.1","defaultDownloadBaseUrl":"https://app.behindgate.com","versions":{"2026.07.1":{"capturedFrom":"https://app.behindgate.com","alsoVerifiedAgainst":["https://app.test.behindgate.net"],"capturedAt":"2026-08-02","platforms":{"linux-amd64":{"archive":"bg-deploy-linux-amd64.tar.gz","binary":"bg-deploy","sha256":"ec7f35b0f0ae2fbd9c127c5c4a6e6b40f62b349adbd3fb87bbf1eecc77bc7c6e"},"linux-arm64":{"archive":"bg-deploy-linux-arm64.tar.gz","binary":"bg-deploy","sha256":"6a02e785d6b264ffa6aef4c630f4874440ed39a23770fa125c40b59df8d303d7"},"darwin-amd64":{"archive":"bg-deploy-darwin-amd64.tar.gz","binary":"bg-deploy","sha256":"57c7308355fc9e5311ccf311d1ac83db70e34dd6b5caf2f613c14ce283b1c15b"},"darwin-arm64":{"archive":"bg-deploy-darwin-arm64.tar.gz","binary":"bg-deploy","sha256":"7941d71f2529d3c58c11739453369e3dd1b691b7c0bc7ec4804b8e4c1b3a0fec"},"windows-amd64":{"archive":"bg-deploy-windows-amd64.zip","binary":"bg-deploy.exe","sha256":"bbecb649f0ba2949f18b7d0f083175ddf925d7b5db1d23849828fbbd1549b89d"}}}}}');
+module.exports = /*#__PURE__*/JSON.parse('{"comment":["Pinned SHA256 checksums for the bg-deploy CLI, keyed by version and platform.","","WHY THIS FILE EXISTS: the vendor publishes a SHA256SUMS.txt next to the binaries,","but it is served by the same host as the binaries themselves. It therefore proves","only that a download was not truncated in transit -- anyone able to serve a modified","binary can serve a matching checksum beside it. A hash committed to this repository","is the part that host cannot rewrite: changing it requires a commit that shows up in","git history and in code review.","","These values were computed locally from downloaded archives, not copied out of the","vendor\'s SHA256SUMS.txt (they were then compared against it, and agreed).","","Downloads are now VERSIONED and immutable (/downloads/<version>/<archive>), so a","pinned hash describes a specific published release rather than whatever the host","happens to be serving. Superseded versions stay listed here so `cli-version` can","roll back to one after a bad release.","","MINIMUM VERSION 2026.8.0. This Action reads the CLI\'s `--json` output, which does","not exist in earlier releases; 2026.07.1 and older also used a different exit-code","scheme. Do not add pre-2026.8.0 entries -- they would install and then fail.","","This table becomes unnecessary once the vendor signs releases: the Action could then","verify a signature at runtime and always take the current build. Tracked in the","hand-over brief at docs/app-repo-release-prompt.md."],"defaultVersion":"2026.8.3","defaultDownloadBaseUrl":"https://app.behindgate.com","versions":{"2026.8.3":{"capturedFrom":"https://app.behindgate.com","capturedAt":"2026-08-09","commit":"22a6604a71611ae47ba4ccdd18653fcd6eb14af3","platforms":{"linux-amd64":{"archive":"bg-deploy-linux-amd64.tar.gz","binary":"bg-deploy","sha256":"c68fbc53c21d42eb7628d2dc6aaf65683033ada12e2ace15976d83e52c4645f9"},"linux-arm64":{"archive":"bg-deploy-linux-arm64.tar.gz","binary":"bg-deploy","sha256":"abd3a018d81649ed2644d622e7389cdb86803d25c6c5d547f7028f80c4dc1770"},"darwin-amd64":{"archive":"bg-deploy-darwin-amd64.tar.gz","binary":"bg-deploy","sha256":"5c71f18d4ce06bc29023ed4ebfc6dd42b717c663961ffeea18f3b6f81b9e9cbc"},"darwin-arm64":{"archive":"bg-deploy-darwin-arm64.tar.gz","binary":"bg-deploy","sha256":"4a9f7907019d7e2cd2bfe734e31c70022efe1f0236935a2e941983ec071e10d8"},"windows-amd64":{"archive":"bg-deploy-windows-amd64.zip","binary":"bg-deploy.exe","sha256":"1015b2b04ef5b71c8b719fc2b780e0e454d2dd7571a81ef2434acb258e9352fa"},"windows-arm64":{"archive":"bg-deploy-windows-arm64.zip","binary":"bg-deploy.exe","sha256":"e48e6ee629c71b01ec67421fd416a5a78ccd9f203fc7f6b8c1a25aa1a2632be2"}}}}}');
 
 /***/ })
 

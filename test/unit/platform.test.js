@@ -12,6 +12,7 @@ describe('resolvePlatform', () => {
     ['darwin', 'x64', 'darwin-amd64'],
     ['darwin', 'arm64', 'darwin-arm64'],
     ['win32', 'x64', 'windows-amd64'],
+    ['win32', 'arm64', 'windows-arm64'],
   ];
 
   for (const [nodePlatform, nodeArch, expected] of cases) {
@@ -26,10 +27,11 @@ describe('resolvePlatform', () => {
     }
   });
 
-  test('rejects windows-arm64, which resolves but is not published', () => {
-    // This is the case a naive lookup table gets wrong: the tokens map cleanly
-    // to "windows-arm64", but the vendor publishes no such archive.
-    assert.throws(() => resolvePlatform('win32', 'arm64'), UnsupportedPlatformError);
+  test('windows-arm64 is supported since the vendor started publishing it', () => {
+    // It used to be the one combination that resolved cleanly from the lookup
+    // tables while having no published archive, and was rejected for that reason.
+    assert.equal(resolvePlatform('win32', 'arm64'), 'windows-arm64');
+    assert.ok(SUPPORTED.includes('windows-arm64'));
   });
 
   test('rejects an unknown OS', () => {

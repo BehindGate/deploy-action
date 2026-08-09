@@ -57,7 +57,7 @@ the site, so that `index.html` sits at the top of it.
 | Output | Description |
 | --- | --- |
 | `release-id` | Identifier of the published release. |
-| `url` | Public address of the deployed site. **Currently always empty** — see [Known gaps](#known-gaps). |
+| `url` | Public address of the deployed site, read from the CLI's `--json` output. |
 
 ## Why you should pin `url`
 
@@ -70,14 +70,13 @@ upload succeeds, the CLI prints `✓ Deployed`, the step exits `0`, and the
 workflow goes green. Your real site simply stops receiving updates while your
 build output goes somewhere else.
 
-This is not hypothetical; it is a covered behaviour in the integration suite
-([`test/integration/deploy.test.js`](test/integration/deploy.test.js)), which
-asserts that a token claiming an arbitrary endpoint silently redirects the
-upload and still exits `0`.
-
-Setting `url` removes that. The destination then lives in your workflow file,
-where it is covered by code review and branch protection, rather than in a
-secret that a single compromised account can rewrite:
+Setting `url` removes that, in two ways. The destination lives in your workflow
+file, where code review and branch protection cover it rather than a secret a
+single compromised account can rewrite — and since CLI 2026.8.0, a token whose
+own claim disagrees with your pinned `url` is **refused outright** rather than
+silently overridden. A swapped secret now fails the job instead of quietly
+succeeding somewhere else. Both behaviours are covered in
+[`test/integration/deploy.test.js`](test/integration/deploy.test.js).
 
 ```yaml
 - uses: behindgate/deploy-action@v1
@@ -155,16 +154,21 @@ served beside the binaries proves nothing.
 
 Verifying against a fixed hash and always taking the newest build are, strictly,
 in tension. [`cli-update.yml`](.github/workflows/cli-update.yml) resolves it: a
-scheduled job follows the published CLI, verifies it, and opens a pull request.
-New versions reach you through a normal release of this Action rather than
-through a frozen table someone has to remember to update — automatic, but with a
-reviewed commit behind every change of hash.
+scheduled job reads the vendor's release index, verifies the newest build, and
+opens a pull request. New versions reach you through a normal release of this
+Action rather than through a frozen table someone has to remember to update —
+automatic, but with a reviewed commit behind every change of hash.
 
-`cli-version` exists as an escape hatch for the one case that genuinely needs it:
-a bad CLI release, where you want to hold the previous version until it is fixed.
-Superseded versions stay in the table for exactly that reason. It is not a
-stability feature, and using it routinely will leave you on a client the server
-has moved past.
+Downloads are versioned and immutable
+(`/downloads/<version>/<archive>`), so a pinned hash describes one specific
+published release and rollback is possible. `cli-version` exists as an escape
+hatch for the one case that genuinely needs it: a bad CLI release, where you want
+to hold the previous version until it is fixed. Superseded versions stay in the
+table for exactly that reason. It is not a stability feature, and using it
+routinely will leave you on a client the server has moved past.
+
+**Minimum CLI version 2026.8.0.** This Action reads the CLI's `--json` output,
+which earlier releases do not have.
 
 Signing the releases would remove this machinery entirely — the Action could
 verify a signature at runtime and always take the current build. That is the
@@ -175,36 +179,32 @@ highest-leverage item in
 
 These are real limitations, tracked as issues rather than papered over.
 
-**The `url` output is empty.** `bg-deploy` 2026.07.1 prints only the release id
-on success (`✓ Deployed. Release <id> is live.`). The deployed address is
-returned by the deploy API but never echoed, and it has no `--json` mode. This
-Action is a thin wrapper over the CLI and does not call the deploy API itself,
-so it has nothing to read. The output is declared and its parser is already in
-place, so it will populate automatically once the CLI exposes the value.
-
-**Download URLs are unversioned.** Artifacts live at
-`/downloads/bg-deploy-<os>-<arch>.tar.gz` with no version in the path, so
-`cli-version` asserts which build the host is expected to be serving rather than
-requesting it by name. If the host serves a different build, checksum
-verification fails closed and the deploy stops rather than running an unverified
-binary. Versioned URLs would make the pin exact.
+**Releases are not signed.** `versions.json` pins a hash per platform because
+that is the only integrity mechanism available: the vendor publishes no
+signatures, and the `SHA256SUMS.txt` served beside the binaries proves nothing
+(see above). A signature verifiable against a key that does not live on the
+download host would let this Action verify at runtime and always take the current
+build, removing the pinned table and the scheduled bump job entirely. It is the
+outstanding item in
+[`docs/app-repo-release-prompt.md`](docs/app-repo-release-prompt.md).
 
 ## Failure messages
 
 The CLI's two failure modes are reported differently, because they need
 different fixes:
 
-- **exit 2 (usage)** — the invocation was rejected. Since the Action builds the
-  command line itself, this nearly always means the `token` input resolved to an
-  empty string: an unset secret interpolates to `""` rather than failing the
-  workflow. Common on forks, where secrets are unavailable by design.
-- **exit 1 (runtime)** — the CLI ran and failed: a malformed token
-  (`error: not a JWT`), an expired or revoked token, a rejected release, or an
-  unreachable endpoint.
+- **exit 2 (configuration)** — the request was rejected before deploying: a
+  missing or malformed token, a bad path, or a `url` that disagrees with the
+  endpoint the token was minted for. Since this Action validates the token
+  format and the path itself before invoking the CLI, an exit 2 with `url` set
+  is most often that endpoint mismatch, and the failure message says so.
+- **exit 1 (runtime)** — the deploy itself failed: the endpoint rejected the
+  release, the runner could not reach it, or the upload was interrupted. Often
+  transient and worth retrying.
 
-Note that a *missing* token exits 2 while a *malformed* token exits 1, even
-though both are credential problems. The Action pre-checks both and fails early
-with a specific message rather than passing a bad value through.
+Before 2026.8.0 a *missing* token exited 2 while a *malformed* one exited 1,
+splitting the same class of problem across both codes. They are now both 2,
+which is what makes the distinction usable.
 
 ## Token handling
 
@@ -214,11 +214,11 @@ cannot appear in a process listing or in the step's command echo.
 
 ## Supported runners
 
-`linux-amd64`, `linux-arm64`, `darwin-amd64`, `darwin-arm64`, `windows-amd64`.
+`linux-amd64`, `linux-arm64`, `darwin-amd64`, `darwin-arm64`, `windows-amd64`,
+`windows-arm64`.
 
-Windows ARM64 runners are not supported: BehindGate publishes no such build, and
-the Action fails with an explicit message rather than guessing at an archive
-name.
+A runner outside that set fails with an explicit message rather than guessing at
+an archive name that would not exist.
 
 ## Reusing this outside GitHub Actions
 

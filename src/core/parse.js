@@ -1,102 +1,105 @@
 'use strict';
 
 /**
- * Parsing of bg-deploy's console output.
+ * Parsing of bg-deploy's `--json` output.
  *
  * Pure, dependency-free: no `@actions/*` imports.
  *
- * Reference output from a successful run (bg-deploy 2026.07.1):
+ * From 2026.8.0 the CLI has a structured output mode: `--json` writes exactly
+ * one object to stdout and sends all human-readable progress to stderr. That is
+ * the contract this Action reads. Earlier releases had no such mode and never
+ * printed the deployed address at all, which is why the `url` output used to
+ * ship empty; parsing console prose was the only option and broke on any wording
+ * change.
  *
- *   Deploying to https://app.example.behindgate.net/api/deploy
- *     from public
- *   Requesting a release…
- *   Uploading 420 bytes…
- *   Waiting for extraction…
- *   Publishing…
- *   ✓ Deployed. Release rel_01J8ZQ is live.
+ * Reference stdout from a successful run (bg-deploy 2026.8.3):
+ *
+ *   {"releaseId":"rel_01J8ZQ","url":"https://demo.behindgate.com/my-app/",
+ *    "endpoint":"https://app.behindgate.com/api/deploy","status":"published",
+ *    "version":"2026.8.3"}
  */
 
-/** Strip ANSI SGR sequences so parsing survives a colourising CLI. */
-// eslint-disable-next-line no-control-regex
-const ANSI = /\[[0-9;]*m/g;
+/** Strip ANSI SGR sequences. Kept for stderr, which may be colourised. */
+const ANSI = /\[[0-9;]*m/g;
 
 function stripAnsi(text) {
   return String(text ?? '').replace(ANSI, '');
 }
 
 /**
- * The release identifier from the success line.
- * Format string in the binary: " Deployed. Release %s is live."
- */
-function parseReleaseId(output) {
-  const match = stripAnsi(output).match(/Deployed\.\s+Release\s+(\S+?)\s+is live/);
-  return match ? match[1] : null;
-}
-
-/**
- * The deploy API endpoint the CLI actually used.
+ * Pull the JSON object out of a stdout buffer.
  *
- * Worth surfacing: when `url` is not pinned this reflects the endpoint claimed
- * by the token, which is the value an attacker who can rewrite the secret would
- * have changed. It is the API endpoint, NOT the public address of the site.
+ * Tolerant of surrounding blank lines and of a stray non-JSON line, so a future
+ * CLI that prints something extra does not cost us the release id. Scans for the
+ * last line that parses as an object, since the result object is emitted last.
  */
-function parseEndpoint(output) {
-  const match = stripAnsi(output).match(/^Deploying to\s+(\S+)/m);
-  return match ? match[1] : null;
-}
+function extractJson(stdout) {
+  const text = stripAnsi(stdout).trim();
+  if (!text) return null;
 
-/**
- * The public URL of the deployed site, if the CLI printed one.
- *
- * As of bg-deploy 2026.07.1 it does NOT: the success line carries only the
- * release id, and the `url` field the API returns is never echoed. This
- * deliberately returns null rather than inventing a URL from the endpoint --
- * a wrong link in a job summary is worse than no link.
- *
- * The patterns below are the shapes a future CLI would plausibly use, so the
- * `url` output starts working the moment upstream adds it. Tracked upstream;
- * see README "Known gaps".
- */
-function parseLiveUrl(output) {
-  const clean = stripAnsi(output);
-  const patterns = [
-    /(?:is )?live at\s+(https?:\/\/\S+?)[\s.]*$/im,
-    /(?:available|deployed) at\s+(https?:\/\/\S+?)[\s.]*$/im,
-    /^\s*(?:URL|Visit):\s*(https?:\/\/\S+?)[\s.]*$/im,
-  ];
+  const candidates = [text, ...text.split('\n').reverse()];
 
-  for (const pattern of patterns) {
-    const match = clean.match(pattern);
-    if (match) return match[1];
+  for (const candidate of candidates) {
+    const trimmed = candidate.trim();
+    if (!trimmed.startsWith('{')) continue;
+    try {
+      const parsed = JSON.parse(trimmed);
+      if (parsed && typeof parsed === 'object' && !Array.isArray(parsed)) {
+        return parsed;
+      }
+    } catch {
+      // Not this line; keep looking.
+    }
   }
 
   return null;
 }
 
-/** True when the CLI printed its success line. */
-function isSuccessOutput(output) {
-  return /Deployed\.\s+Release\s+\S+\s+is live/.test(stripAnsi(output));
+/**
+ * Parse a successful `--json` run.
+ *
+ * Returns null when nothing usable could be read, so callers can warn rather
+ * than publish empty outputs as if they were real. Absent individual fields
+ * come back as null rather than undefined, so the shape is stable.
+ *
+ * @returns {{releaseId: string|null, url: string|null, endpoint: string|null, status: string|null, version: string|null}|null}
+ */
+function parseDeployJson(stdout) {
+  const parsed = extractJson(stdout);
+  if (!parsed) return null;
+
+  const str = (value) => (typeof value === 'string' && value ? value : null);
+
+  return {
+    releaseId: str(parsed.releaseId),
+    url: str(parsed.url),
+    endpoint: str(parsed.endpoint),
+    status: str(parsed.status),
+    version: str(parsed.version),
+  };
 }
 
 /**
- * Everything worth extracting from a run, in one pass.
+ * Pull a message out of the CLI's error output.
  *
- * @returns {{releaseId: string|null, endpoint: string|null, url: string|null, succeeded: boolean}}
+ * `--json` emits `{"error":{"code":"...","message":"..."}}` on failure, but a
+ * failure early enough in startup may still be plain text on stderr, so fall
+ * back to the first `error:` line.
  */
-function parseDeployOutput(output) {
-  return {
-    releaseId: parseReleaseId(output),
-    endpoint: parseEndpoint(output),
-    url: parseLiveUrl(output),
-    succeeded: isSuccessOutput(output),
-  };
+function parseErrorMessage({ stdout = '', stderr = '' } = {}) {
+  const parsed = extractJson(stdout);
+  if (parsed && parsed.error && typeof parsed.error === 'object') {
+    const { code, message } = parsed.error;
+    if (message) return code ? `${message} (${code})` : String(message);
+  }
+
+  const match = stripAnsi(stderr).match(/^\s*error:\s*(.+)$/m);
+  return match ? match[1].trim() : null;
 }
 
 module.exports = {
   stripAnsi,
-  parseReleaseId,
-  parseEndpoint,
-  parseLiveUrl,
-  isSuccessOutput,
-  parseDeployOutput,
+  extractJson,
+  parseDeployJson,
+  parseErrorMessage,
 };

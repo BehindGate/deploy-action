@@ -20,7 +20,7 @@ const tc = require('@actions/tool-cache');
 const { resolvePlatform } = require('./core/platform');
 const versions = require('./core/versions');
 const { verifyFileChecksum } = require('./core/checksum');
-const { parseDeployOutput } = require('./core/parse');
+const { parseDeployJson, parseErrorMessage } = require('./core/parse');
 const { describeExitCode, EXIT_SUCCESS } = require('./core/errors');
 
 const TOOL_NAME = 'bg-deploy';
@@ -45,7 +45,7 @@ async function acquireCli({ version, platform, baseUrl }) {
     return path.join(cached, artifact.binary);
   }
 
-  const url = versions.downloadUrl(baseUrl, artifact.archive);
+  const url = versions.downloadUrl(baseUrl, version, artifact.archive);
   core.info(`Downloading bg-deploy ${version} (${platform}) from ${url}`);
 
   const archivePath = await tc.downloadTool(url);
@@ -168,9 +168,8 @@ async function writeSummary({ releaseId, url, endpoint, deployPath, version, pin
 
     if (!url) {
       summary.addRaw(
-        'The deployed address is not shown because bg-deploy does not print it. ' +
-          'This Action reads outputs from the CLI rather than calling the deploy ' +
-          'API itself, so it has nothing to link here yet.',
+        'No deployed address was reported by the CLI, so there is nothing to ' +
+          'link. The deploy itself succeeded.',
         true
       );
     }
@@ -178,9 +177,9 @@ async function writeSummary({ releaseId, url, endpoint, deployPath, version, pin
     if (!pinned) {
       summary.addRaw(
         '<strong>Endpoint not pinned.</strong> The upload target came from the ' +
-          "token's own claim. Set the <code>url</code> input to pin it, so a " +
-          'swapped secret cannot redirect the build elsewhere while this job ' +
-          'still reports success.',
+          "token's own claim. Set the <code>url</code> input to pin it: the CLI " +
+          'then refuses to deploy when a token claims a different endpoint, ' +
+          'instead of quietly sending the build wherever the token says.',
         true
       );
     }
@@ -213,7 +212,7 @@ async function run() {
   const platform = resolvePlatform();
   const binary = await acquireCli({ version, platform, baseUrl });
 
-  const args = ['-y'];
+  const args = ['-y', '--json'];
   if (url) {
     args.push('--url', url);
   } else {
@@ -221,58 +220,75 @@ async function run() {
       'No `url` input set, so the deploy endpoint comes from the token itself. ' +
         'A token is both a credential and a routing instruction: anyone who can ' +
         'change the secret can redirect this upload while the job still reports ' +
-        'success. Pin the endpoint with `url:` to remove that risk.'
+        'success. Pin the endpoint with `url:` and the CLI will refuse to deploy ' +
+        'if a token turns up claiming a different one.'
     );
   }
   args.push(deployPath);
 
+  // stdout and stderr must stay separate: under --json, stdout carries exactly
+  // one JSON object and every human-readable progress line goes to stderr.
+  // Merging them would leave the result unparseable.
+  let stdout = '';
+  let stderr = '';
+
   // The token goes in the environment, never on the command line, so it cannot
   // surface in a process listing or in the command echo of the step log.
-  let output = '';
-  const capture = (data) => {
-    output += data.toString();
-  };
-
   const exitCode = await exec.exec(binary, args, {
     ignoreReturnCode: true,
+    silent: true,
     env: { ...process.env, BEHINDGATE_TOKEN: token },
-    listeners: { stdout: capture, stderr: capture },
+    listeners: {
+      stdout: (data) => {
+        stdout += data.toString();
+      },
+      stderr: (data) => {
+        const text = data.toString();
+        stderr += text;
+        // Echo the CLI's progress so the step log still reads normally.
+        process.stderr.write(text);
+      },
+    },
   });
 
   if (exitCode !== EXIT_SUCCESS) {
-    const { title, detail } = describeExitCode(exitCode, { path: deployPath });
+    const { title, detail } = describeExitCode(exitCode, {
+      path: deployPath,
+      urlPinned: Boolean(url),
+      cliMessage: parseErrorMessage({ stdout, stderr }),
+    });
     core.setFailed(`${title}\n\n${detail}`);
     return;
   }
 
-  const parsed = parseDeployOutput(output);
+  const parsed = parseDeployJson(stdout);
 
-  if (!parsed.releaseId) {
+  if (!parsed) {
     core.warning(
-      'bg-deploy reported success but no release id could be parsed from its ' +
-        'output. The `release-id` output will be empty. This usually means the ' +
-        'CLI changed its output format; please open an issue.'
+      'bg-deploy reported success but its --json output could not be parsed, ' +
+        'so the `release-id` and `url` outputs will be empty. This usually ' +
+        'means the CLI changed its output contract; please open an issue.'
     );
   }
 
-  core.setOutput('release-id', parsed.releaseId || '');
-  core.setOutput('url', parsed.url || '');
+  const releaseId = parsed?.releaseId || '';
+  const deployedUrl = parsed?.url || '';
 
-  if (!parsed.url) {
-    core.info(
-      'The `url` output is empty: bg-deploy prints only the release id on ' +
-        'success, and this Action does not call the deploy API itself.'
-    );
-  }
+  core.setOutput('release-id', releaseId);
+  core.setOutput('url', deployedUrl);
 
-  core.info(`Deployed release ${parsed.releaseId || '(unknown)'}`);
+  core.info(
+    deployedUrl
+      ? `Deployed release ${releaseId || '(unknown)'} to ${deployedUrl}`
+      : `Deployed release ${releaseId || '(unknown)'}`
+  );
 
   await writeSummary({
-    releaseId: parsed.releaseId,
-    url: parsed.url,
-    endpoint: parsed.endpoint,
+    releaseId,
+    url: deployedUrl,
+    endpoint: parsed?.endpoint,
     deployPath,
-    version,
+    version: parsed?.version || version,
     pinned: Boolean(url),
   });
 }

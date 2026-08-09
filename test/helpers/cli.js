@@ -43,10 +43,14 @@ async function acquireRealCli() {
   if (fs.existsSync(binary)) return { binary };
 
   fs.mkdirSync(installDir, { recursive: true });
-  const archivePath = path.join(TMP_DIR, artifact.archive);
+
+  // Version-scoped: archive names are identical across releases, so caching by
+  // bare name means a stale download from a previous version fails verification
+  // against the new pin -- which looks like a checksum failure, not a stale file.
+  const archivePath = path.join(TMP_DIR, `${version}-${artifact.archive}`);
 
   if (!fs.existsSync(archivePath)) {
-    const url = versions.downloadUrl(baseUrl, artifact.archive);
+    const url = versions.downloadUrl(baseUrl, version, artifact.archive);
     let response;
     try {
       response = await fetch(url);

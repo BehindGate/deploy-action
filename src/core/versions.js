@@ -104,13 +104,24 @@ function semverSafeVersion(version) {
 /**
  * Build the download URL for an archive.
  *
+ * Versioned and immutable: `/downloads/<version>/<archive>`. Until 2026.8.x the
+ * vendor published only unversioned paths, which meant a pinned checksum was a
+ * pin against a moving target -- the host could serve different bytes under the
+ * same name at any time. Requesting the version by name makes `cli-version` an
+ * actual pin, and makes rollback to a previous release possible.
+ *
  * The base URL is a parameter rather than a constant because BehindGate serves
  * downloads from a different host per environment (production and test are not
  * the same host), so hardcoding one would break every non-production user.
  */
-function downloadUrl(baseUrl, archive) {
+function downloadUrl(baseUrl, version, archive) {
   const trimmed = String(baseUrl).replace(/\/+$/, '');
-  return `${trimmed}/downloads/${archive}`;
+  return `${trimmed}/downloads/${version}/${archive}`;
+}
+
+/** URL of the published release index (`{latest, versions: [...]}`). */
+function indexUrl(baseUrl) {
+  return `${String(baseUrl).replace(/\/+$/, '')}/downloads/index.json`;
 }
 
 module.exports = {
@@ -121,6 +132,7 @@ module.exports = {
   resolveArtifact,
   semverSafeVersion,
   downloadUrl,
+  indexUrl,
   UnknownVersionError,
   UnknownPlatformError,
 };
