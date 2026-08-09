@@ -40,10 +40,16 @@ jobs:
       # source. The floating tag is what users actually run, so this is the last
       # point at which a stale dist/ can be caught.
       - name: Verify the released bundle matches source
+        env:
+          # Passed through the environment, never interpolated into the script.
+          # A tag name reaches this workflow from `github.event.release.tag_name`,
+          # so expanding it inline would let a crafted tag execute shell in a job
+          # holding contents: write.
+          TAG: ${{ inputs.tag }}
         run: |
           npm run build
           if ! git diff --exit-code --stat -- dist/; then
-            echo "::error::dist/ in ${{ inputs.tag }} does not match a fresh build. Refusing to move the major tag."
+            echo "::error::dist/ in $TAG does not match a fresh build. Refusing to move the major tag."
             exit 1
           fi
 

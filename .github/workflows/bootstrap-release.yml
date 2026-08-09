@@ -1,0 +1,111 @@
+name: Bootstrap release
+
+# Cuts a release from inside Actions, for the cases release-please cannot serve:
+#
+#   - the very first release, which release-please will not propose because the
+#     manifest already records it as the current version, and
+#   - an emergency release when the normal path is unavailable.
+#
+# It always tags the current head of the default branch. There is deliberately no
+# "ref" input: a dispatch that can tag an arbitrary commit is a way to publish
+# code that never passed review.
+#
+# The usual path remains merging the release pull request that release-please
+# keeps open. Reach for this only when that is not possible.
+
+on:
+  workflow_dispatch:
+    inputs:
+      version:
+        description: 'Version to release, without the leading v (e.g. 1.0.0)'
+        required: true
+        type: string
+
+permissions:
+  contents: write
+
+jobs:
+  tag:
+    name: Tag and publish
+    runs-on: ubuntu-latest
+    outputs:
+      tag: ${{ steps.plan.outputs.tag }}
+    steps:
+      - uses: actions/checkout@v4
+        with:
+          # Always the default branch, never the branch this workflow was
+          # dispatched from, so a release can only ever contain reviewed code.
+          ref: main
+          fetch-depth: 0
+
+      - uses: actions/setup-node@v4
+        with:
+          node-version-file: .node-version
+          cache: npm
+
+      - name: Validate the request
+        id: plan
+        env:
+          VERSION: ${{ inputs.version }}
+        run: |
+          set -euo pipefail
+
+          if ! printf '%s' "$VERSION" | grep -Eq '^[0-9]+\.[0-9]+\.[0-9]+(-[0-9A-Za-z.-]+)?$'; then
+            echo "::error::'$VERSION' is not a semver version. Pass it without the leading v, e.g. 1.0.0"
+            exit 1
+          fi
+
+          TAG="v$VERSION"
+          if git rev-parse -q --verify "refs/tags/$TAG" >/dev/null; then
+            echo "::error::$TAG already exists. Version tags are immutable; pick a new version."
+            exit 1
+          fi
+
+          echo "tag=$TAG" >> "$GITHUB_OUTPUT"
+          echo "Releasing $TAG from $(git rev-parse --short HEAD) on main"
+
+      - run: npm ci
+
+      # Same gate the normal release path applies: never publish a tag whose
+      # committed bundle does not match its own source.
+      - name: Verify the bundle matches source
+        run: |
+          npm run build
+          if ! git diff --exit-code --stat -- dist/; then
+            echo "::error::dist/ on main does not match a fresh build. Refusing to release."
+            exit 1
+          fi
+
+      - name: Run the test suite
+        run: npm test
+
+      - name: Create the tag and the release
+        env:
+          GH_TOKEN: ${{ github.token }}
+          TAG: ${{ steps.plan.outputs.tag }}
+        run: |
+          set -euo pipefail
+
+          git config user.name  'github-actions[bot]'
+          git config user.email 'github-actions[bot]@users.noreply.github.com'
+
+          git tag -a "$TAG" -m "$TAG"
+          git push origin "refs/tags/$TAG"
+
+          gh release create "$TAG" \
+            --verify-tag \
+            --title "$TAG" \
+            --generate-notes
+
+          echo "Created $TAG and its release." >> "$GITHUB_STEP_SUMMARY"
+
+  # A release created with GITHUB_TOKEN does not trigger `release: published`,
+  # so the major tag has to be moved from here rather than via release.yml.
+  major:
+    name: Update the floating major tag
+    needs: tag
+    uses: ./.github/workflows/tag-major.yml
+    permissions:
+      contents: write
+    with:
+      tag: ${{ needs.tag.outputs.tag }}

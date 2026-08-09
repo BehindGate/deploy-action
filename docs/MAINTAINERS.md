@@ -42,10 +42,27 @@ between them.
 
 ### Bootstrapping the first release
 
-`.release-please-manifest.json` records `1.0.0` as the current version, but no
-`v1.0.0` tag exists yet. Cut it once by hand — tag the commit and publish the
-release, or run `release.yml` via **workflow_dispatch** with `v1.0.0` — and
-release-please will propose every version after that from the commit history.
+`.release-please-manifest.json` records `1.0.0` as the current version, so
+release-please will never propose it — it only proposes what comes *after* the
+recorded version. The first tag has to be created once, by either:
+
+- running [`bootstrap-release.yml`](../.github/workflows/bootstrap-release.yml)
+  via **workflow_dispatch** with `1.0.0`, which verifies the bundle, runs the
+  tests, tags the head of `main`, publishes the release and moves `v1`; or
+- tagging and publishing by hand:
+  ```bash
+  git checkout main && git pull
+  git tag -a v1.0.0 -m "v1.0.0"
+  git push origin v1.0.0
+  ```
+  then publishing a release for that tag, which fires `release.yml`.
+
+Note that `release.yml` via **workflow_dispatch** cannot bootstrap: it checks out
+the tag it is given, so the tag must already exist. That path is for *repointing*
+`v1` at an existing release after a botched one, not for creating the first tag.
+
+After the first release, release-please proposes every version from the commit
+history and `bootstrap-release.yml` should not be needed again.
 
 ## Versioning policy
 
