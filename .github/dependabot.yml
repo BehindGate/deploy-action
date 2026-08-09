@@ -1,0 +1,27 @@
+version: 2
+
+updates:
+  # Runtime and build dependencies. The bundle in dist/ must be rebuilt when
+  # these change, so every one of these PRs is gated by the `dist` job in CI.
+  - package-ecosystem: npm
+    directory: /
+    schedule:
+      interval: weekly
+    open-pull-requests-limit: 5
+    labels:
+      - dependencies
+    groups:
+      actions-toolkit:
+        patterns:
+          - '@actions/*'
+      dev-dependencies:
+        dependency-type: development
+
+  # The Actions this repository's own workflows depend on.
+  - package-ecosystem: github-actions
+    directory: /
+    schedule:
+      interval: weekly
+    labels:
+      - dependencies
+      - github-actions

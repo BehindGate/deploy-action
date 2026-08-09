@@ -1,0 +1,69 @@
+{
+  "comment": [
+    "Pinned SHA256 checksums for the bg-deploy CLI, keyed by version and platform.",
+    "",
+    "WHY THIS FILE EXISTS: the vendor publishes a SHA256SUMS.txt next to the binaries,",
+    "but it is served by the same host as the binaries themselves. It therefore proves",
+    "only that a download was not truncated in transit -- anyone able to serve a modified",
+    "binary can serve a matching checksum beside it. A hash committed to this repository",
+    "is the part that host cannot rewrite: changing it requires a commit that shows up in",
+    "git history and in code review.",
+    "",
+    "These values were computed locally from downloaded archives, not copied out of the",
+    "vendor's SHA256SUMS.txt (they were then compared against it, and agreed).",
+    "",
+    "Downloads are now VERSIONED and immutable (/downloads/<version>/<archive>), so a",
+    "pinned hash describes a specific published release rather than whatever the host",
+    "happens to be serving. Superseded versions stay listed here so `cli-version` can",
+    "roll back to one after a bad release.",
+    "",
+    "MINIMUM VERSION 2026.8.0. This Action reads the CLI's `--json` output, which does",
+    "not exist in earlier releases; 2026.07.1 and older also used a different exit-code",
+    "scheme. Do not add pre-2026.8.0 entries -- they would install and then fail.",
+    "",
+    "This table becomes unnecessary once the vendor signs releases: the Action could then",
+    "verify a signature at runtime and always take the current build. Tracked in the",
+    "hand-over brief at docs/app-repo-release-prompt.md."
+  ],
+  "defaultVersion": "2026.8.3",
+  "defaultDownloadBaseUrl": "https://app.behindgate.com",
+  "versions": {
+    "2026.8.3": {
+      "capturedFrom": "https://app.behindgate.com",
+      "capturedAt": "2026-08-09",
+      "commit": "22a6604a71611ae47ba4ccdd18653fcd6eb14af3",
+      "platforms": {
+        "linux-amd64": {
+          "archive": "bg-deploy-linux-amd64.tar.gz",
+          "binary": "bg-deploy",
+          "sha256": "c68fbc53c21d42eb7628d2dc6aaf65683033ada12e2ace15976d83e52c4645f9"
+        },
+        "linux-arm64": {
+          "archive": "bg-deploy-linux-arm64.tar.gz",
+          "binary": "bg-deploy",
+          "sha256": "abd3a018d81649ed2644d622e7389cdb86803d25c6c5d547f7028f80c4dc1770"
+        },
+        "darwin-amd64": {
+          "archive": "bg-deploy-darwin-amd64.tar.gz",
+          "binary": "bg-deploy",
+          "sha256": "5c71f18d4ce06bc29023ed4ebfc6dd42b717c663961ffeea18f3b6f81b9e9cbc"
+        },
+        "darwin-arm64": {
+          "archive": "bg-deploy-darwin-arm64.tar.gz",
+          "binary": "bg-deploy",
+          "sha256": "4a9f7907019d7e2cd2bfe734e31c70022efe1f0236935a2e941983ec071e10d8"
+        },
+        "windows-amd64": {
+          "archive": "bg-deploy-windows-amd64.zip",
+          "binary": "bg-deploy.exe",
+          "sha256": "1015b2b04ef5b71c8b719fc2b780e0e454d2dd7571a81ef2434acb258e9352fa"
+        },
+        "windows-arm64": {
+          "archive": "bg-deploy-windows-arm64.zip",
+          "binary": "bg-deploy.exe",
+          "sha256": "e48e6ee629c71b01ec67421fd416a5a78ccd9f203fc7f6b8c1a25aa1a2632be2"
+        }
+      }
+    }
+  }
+}
