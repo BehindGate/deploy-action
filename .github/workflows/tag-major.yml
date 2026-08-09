@@ -1,0 +1,85 @@
+name: Tag major
+
+# Moves the floating major tag (v1) to a released version, after proving the
+# released bundle reproduces from its own source.
+#
+# Reusable rather than inlined because two paths reach it -- release-please
+# cutting a release, and a human publishing one by hand -- and the dist/ check
+# is the last gate before the tag every consumer actually runs starts pointing
+# at new code. Two copies of that gate would eventually diverge.
+
+on:
+  workflow_call:
+    inputs:
+      tag:
+        description: 'Release tag to point the major tag at (e.g. v1.2.3)'
+        required: true
+        type: string
+
+permissions:
+  contents: write
+
+jobs:
+  tag:
+    name: Move the floating major tag
+    runs-on: ubuntu-latest
+    steps:
+      - uses: actions/checkout@v4
+        with:
+          fetch-depth: 0
+          ref: ${{ inputs.tag }}
+
+      - uses: actions/setup-node@v4
+        with:
+          node-version-file: .node-version
+          cache: npm
+
+      - run: npm ci
+
+      # Refuse to publish a release whose committed bundle does not match its
+      # source. The floating tag is what users actually run, so this is the last
+      # point at which a stale dist/ can be caught.
+      - name: Verify the released bundle matches source
+        run: |
+          npm run build
+          if ! git diff --exit-code --stat -- dist/; then
+            echo "::error::dist/ in ${{ inputs.tag }} does not match a fresh build. Refusing to move the major tag."
+            exit 1
+          fi
+
+      - name: Move the major tag
+        env:
+          TAG: ${{ inputs.tag }}
+        run: |
+          set -euo pipefail
+
+          case "$TAG" in
+            v[0-9]*) ;;
+            *) echo "::error::Tag '$TAG' is not of the form vN[.N.N]"; exit 1 ;;
+          esac
+
+          MAJOR="${TAG%%.*}"   # v1.2.3 -> v1
+          echo "Pointing $MAJOR at $TAG ($(git rev-parse --short HEAD))"
+
+          git config user.name  'github-actions[bot]'
+          git config user.email 'github-actions[bot]@users.noreply.github.com'
+
+          # Only the major tag ever moves. Version tags are immutable by
+          # convention, and consumers and auditors rely on that.
+          git tag -fa "$MAJOR" -m "Update $MAJOR to $TAG"
+          git push --force origin "refs/tags/$MAJOR"
+
+      - name: Summarise
+        env:
+          TAG: ${{ inputs.tag }}
+        run: |
+          MAJOR="${TAG%%.*}"
+          {
+            echo "### Released $TAG"
+            echo ""
+            echo "The floating \`$MAJOR\` tag now points at \`$TAG\`."
+            echo ""
+            echo '```yaml'
+            echo "- uses: behindgate/deploy-action@$MAJOR"
+            echo '```'
+          } >> "$GITHUB_STEP_SUMMARY"

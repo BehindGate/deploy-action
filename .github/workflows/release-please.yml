@@ -1,0 +1,50 @@
+name: Release Please
+
+# Automates the version decision, not the release itself.
+#
+# release-please reads conventional commits on main and keeps a release pull
+# request open with the next version and a generated changelog. Merging that PR
+# is what cuts the release -- a human still presses the button, which matters
+# here because every consumer pinned to @v1 picks up a release immediately, with
+# no staged rollout to catch a bad one.
+#
+# Note on the second job: releases created with GITHUB_TOKEN do not trigger
+# further workflows, so the `release: published` event from release-please would
+# never reach release.yml and the major tag would silently stop moving. Calling
+# the reusable workflow from here closes that gap without needing a PAT.
+
+on:
+  push:
+    branches: [main]
+
+permissions:
+  contents: write
+  pull-requests: write
+
+concurrency:
+  group: release-please
+  cancel-in-progress: false
+
+jobs:
+  propose:
+    name: Propose a release
+    runs-on: ubuntu-latest
+    outputs:
+      release_created: ${{ steps.release.outputs.release_created }}
+      tag_name: ${{ steps.release.outputs.tag_name }}
+    steps:
+      - uses: googleapis/release-please-action@v4
+        id: release
+        with:
+          config-file: release-please-config.json
+          manifest-file: .release-please-manifest.json
+
+  tag-major:
+    name: Update the floating major tag
+    needs: propose
+    if: needs.propose.outputs.release_created == 'true'
+    uses: ./.github/workflows/tag-major.yml
+    permissions:
+      contents: write
+    with:
+      tag: ${{ needs.propose.outputs.tag_name }}

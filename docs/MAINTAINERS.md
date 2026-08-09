@@ -2,19 +2,50 @@
 
 ## Releasing
 
-1. Make sure `main` is green and `dist/` is committed and current
-   (`npm run build` should produce no diff).
-2. Draft a GitHub release with a semver tag: `v1.2.3`.
-3. Publishing the release triggers [`.github/workflows/release.yml`](../.github/workflows/release.yml), which:
-   - rebuilds the bundle and **refuses to continue** if the tagged `dist/` does
-     not match a fresh build,
-   - force-updates the floating major tag (`v1`) to point at the new release.
+Releases are proposed automatically and cut by a human.
+
+1. [release-please](https://github.com/googleapis/release-please) watches `main`
+   and keeps a pull request open titled something like
+   *"chore(main): release 1.3.0"*, containing the version bump and a generated
+   `CHANGELOG.md`. It computes the version from conventional commit subjects —
+   see [`CONTRIBUTING.md`](../CONTRIBUTING.md).
+2. Review that PR. **Merging it is the release**: release-please tags the commit
+   and publishes the GitHub release.
+3. [`release-please.yml`](../.github/workflows/release-please.yml) then calls
+   [`tag-major.yml`](../.github/workflows/tag-major.yml), which rebuilds the
+   bundle, **refuses to continue** if the tagged `dist/` does not match a fresh
+   build, and force-updates the floating major tag (`v1`).
 
 Users reference `behindgate/deploy-action@v1`, so the floating tag is what
-actually runs. Nothing else moves it.
+actually runs.
 
-To repoint the major tag manually (for example after a botched release), run the
-`Release` workflow via **workflow_dispatch** with the target tag.
+**Only the major tag ever moves.** `v1.2.3` is immutable by convention, and both
+Dependabot and anyone auditing a pinned SHA rely on that. Never repoint a patch
+or minor tag; cut a new one.
+
+The version decision is automated; publishing is not. That is deliberate — every
+consumer on `@v1` picks up a release the moment it exists, with no staged
+rollout, so a human should look at the diff first.
+
+### Why the major tag is moved from two places
+
+A release created with `GITHUB_TOKEN` does not trigger further workflows, so the
+`release: published` event from release-please never reaches
+[`release.yml`](../.github/workflows/release.yml). If that workflow were the only
+route, the major tag would silently stop moving the day release-please was
+adopted. `release-please.yml` therefore calls the reusable workflow directly.
+
+`release.yml` remains for the off-path cases — a release published by hand in the
+UI, and `workflow_dispatch` to repoint the major tag after a botched release.
+Both routes call the same reusable workflow, so the `dist/` gate cannot drift
+between them.
+
+### Bootstrapping the first release
+
+`.release-please-manifest.json` records `1.0.0` as the current version, but no
+`v1.0.0` tag exists yet. Cut it once by hand — tag the commit and publish the
+release, or run `release.yml` via **workflow_dispatch** with `v1.0.0` — and
+release-please will propose every version after that from the commit history.
 
 ## Versioning policy
 

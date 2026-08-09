@@ -1,0 +1,62 @@
+name: PR title
+
+# release-please derives the next version and the changelog from commit
+# subjects. This repository squash-merges, so the PR title becomes that subject:
+# a title that is not a conventional commit means the change silently never
+# appears in a release. Checking it here turns that into a visible failure
+# rather than a version that quietly does not bump.
+#
+# Deliberately implemented inline rather than with a third-party action: it is a
+# dozen lines of regex, and this repository asks its own dependencies to justify
+# the trust they need.
+
+on:
+  pull_request:
+    types: [opened, edited, reopened, synchronize]
+
+permissions:
+  contents: read
+
+jobs:
+  conventional:
+    name: Title is a conventional commit
+    runs-on: ubuntu-latest
+    steps:
+      - name: Check the title
+        env:
+          TITLE: ${{ github.event.pull_request.title }}
+        run: |
+          set -euo pipefail
+
+          TYPES='feat|fix|perf|revert|docs|build|chore|ci|refactor|style|test'
+
+          if printf '%s' "$TITLE" | grep -Eq "^(${TYPES})(\([a-z0-9._/-]+\))?!?: .+"; then
+            echo "OK: $TITLE"
+            exit 0
+          fi
+
+          echo "::error title=PR title is not a conventional commit::${TITLE}"
+          {
+            echo "### PR title must be a conventional commit"
+            echo ""
+            echo "This repository squash-merges, so the PR title becomes the commit"
+            echo "subject that release-please reads. A title outside this format means"
+            echo "the change never appears in a release."
+            echo ""
+            echo "Format: \`type(optional-scope): description\`"
+            echo ""
+            echo "Types: \`${TYPES//|/\`, \`}\`"
+            echo ""
+            echo "Examples:"
+            echo ""
+            echo '```'
+            echo "fix(cache): key the tool cache on a semver-normalised version"
+            echo "feat: add windows-arm64 support"
+            echo "feat!: require bg-deploy 2026.8.0 or newer"
+            echo '```'
+            echo ""
+            echo "Only \`feat\`, \`fix\`, \`perf\`, \`revert\`, \`docs\` and \`build\` appear in"
+            echo "the changelog. A trailing \`!\` marks a breaking change and bumps the"
+            echo "major version."
+          } >> "$GITHUB_STEP_SUMMARY"
+          exit 1
