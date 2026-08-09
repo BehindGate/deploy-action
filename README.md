@@ -257,6 +257,10 @@ To target a non-production environment:
 BG_DOWNLOAD_BASE_URL=https://app.test.behindgate.net npm run test:integration
 ```
 
+Pull request titles must be conventional commits — releases and the changelog
+are generated from them, and CI checks the title. See
+[`CONTRIBUTING.md`](CONTRIBUTING.md).
+
 See [`docs/MAINTAINERS.md`](docs/MAINTAINERS.md) for releasing and for
 re-capturing checksums after a CLI release.
 

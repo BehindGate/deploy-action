@@ -1,8 +1,17 @@
 name: Release
 
-# Maintains the floating major tag (v1) that users reference as
-# `behindgate/deploy-action@v1`, so they pick up patches without editing
-# workflows.
+# Fallback paths to the floating major tag, for releases that do not come from
+# release-please:
+#
+#   - a release published by hand in the GitHub UI, and
+#   - workflow_dispatch, to repoint the major tag after a botched release.
+#
+# The normal path is merging the release pull request that release-please keeps
+# open; that route moves the tag from release-please.yml directly, because a
+# release created with GITHUB_TOKEN does not trigger the `release` event here.
+#
+# Both routes call the same reusable workflow, so the dist/ verification gate
+# cannot drift between them.
 
 on:
   release:
@@ -17,64 +26,10 @@ permissions:
   contents: write
 
 jobs:
-  retag:
+  tag-major:
     name: Update the floating major tag
-    runs-on: ubuntu-latest
-    steps:
-      - uses: actions/checkout@v4
-        with:
-          fetch-depth: 0
-          ref: ${{ github.event.release.tag_name || inputs.tag }}
-
-      - uses: actions/setup-node@v4
-        with:
-          node-version-file: .node-version
-          cache: npm
-
-      - run: npm ci
-
-      # Refuse to publish a release whose committed bundle does not match its
-      # source. The floating tag is what users actually run, so this is the last
-      # point at which a stale dist/ can be caught.
-      - name: Verify the released bundle matches source
-        run: |
-          npm run build
-          if ! git diff --exit-code --stat -- dist/; then
-            echo "::error::dist/ in this tag does not match a fresh build. Refusing to move the major tag."
-            exit 1
-          fi
-
-      - name: Move the major tag
-        env:
-          TAG: ${{ github.event.release.tag_name || inputs.tag }}
-        run: |
-          set -euo pipefail
-
-          case "$TAG" in
-            v[0-9]*) ;;
-            *) echo "::error::Tag '$TAG' is not of the form vN[.N.N]"; exit 1 ;;
-          esac
-
-          MAJOR="${TAG%%.*}"   # v1.2.3 -> v1
-          echo "Pointing $MAJOR at $TAG ($(git rev-parse --short HEAD))"
-
-          git config user.name  'github-actions[bot]'
-          git config user.email 'github-actions[bot]@users.noreply.github.com'
-
-          git tag -fa "$MAJOR" -m "Update $MAJOR to $TAG"
-          git push --force origin "refs/tags/$MAJOR"
-
-      - name: Summarise
-        env:
-          TAG: ${{ github.event.release.tag_name || inputs.tag }}
-        run: |
-          MAJOR="${TAG%%.*}"
-          {
-            echo "### Release $TAG"
-            echo ""
-            echo "The floating \`$MAJOR\` tag now points at \`$TAG\`."
-            echo ""
-            echo '```yaml'
-            echo "- uses: behindgate/deploy-action@$MAJOR"
-            echo '```'
-          } >> "$GITHUB_STEP_SUMMARY"
+    uses: ./.github/workflows/tag-major.yml
+    permissions:
+      contents: write
+    with:
+      tag: ${{ github.event.release.tag_name || inputs.tag }}

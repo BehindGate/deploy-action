@@ -10,6 +10,15 @@ updates:
     open-pull-requests-limit: 5
     labels:
       - dependencies
+    # Conventional prefixes, so release-please sees these commits and the PR
+    # title check passes. Runtime dependencies use `fix` deliberately: they are
+    # bundled into dist/, so bumping one changes the code consumers execute and
+    # deserves a release. Development dependencies use `chore` and release
+    # nothing.
+    commit-message:
+      prefix: fix
+      prefix-development: chore
+      include: scope
     groups:
       actions-toolkit:
         patterns:
@@ -25,3 +34,7 @@ updates:
     labels:
       - dependencies
       - github-actions
+    # Workflow dependencies are not shipped to consumers, so they release nothing.
+    commit-message:
+      prefix: ci
+      include: scope
