@@ -22,7 +22,7 @@ jobs:
         with:
           node-version-file: .node-version
           cache: npm
-      - run: npm ci
+      - run: npm ci --ignore-scripts
       - run: npm run lint
 
   test:
@@ -38,7 +38,7 @@ jobs:
         with:
           node-version-file: .node-version
           cache: npm
-      - run: npm ci
+      - run: npm ci --ignore-scripts
 
       # Unit tests are pure and run everywhere. The integration tests drive the
       # real CLI against a local capture server with a fake JWT -- no secret, so
@@ -55,7 +55,7 @@ jobs:
         with:
           node-version-file: .node-version
           cache: npm
-      - run: npm ci
+      - run: npm ci --ignore-scripts
       - run: npm run build
 
       # The Action runs dist/index.js directly, so a stale bundle means the
@@ -78,7 +78,7 @@ jobs:
         with:
           node-version-file: .node-version
           cache: npm
-      - run: npm ci
+      - run: npm ci --ignore-scripts
 
       # The component cannot read versions.json at job time -- this repository is
       # never checked out on a GitLab runner -- so the checksums are inlined into
@@ -95,7 +95,7 @@ jobs:
         with:
           node-version-file: .node-version
           cache: npm
-      - run: npm ci
+      - run: npm ci --ignore-scripts
 
       # Download URLs are unversioned, so the host can start serving a different
       # build under the same version at any time. This job turns that into a

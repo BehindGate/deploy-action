@@ -34,7 +34,7 @@ jobs:
         with:
           node-version-file: .node-version
           cache: npm
-      - run: npm ci
+      - run: npm ci --ignore-scripts
 
       - name: Adopt the served version
         run: node script/checksums.js bump

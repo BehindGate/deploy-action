@@ -34,7 +34,7 @@ jobs:
           node-version-file: .node-version
           cache: npm
 
-      - run: npm ci
+      - run: npm ci --ignore-scripts
 
       # Refuse to publish a release whose committed outputs do not match their
       # source. The floating tag is what users actually run -- dist/ for the
