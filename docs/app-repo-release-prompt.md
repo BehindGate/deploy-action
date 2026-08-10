@@ -18,7 +18,7 @@ starting; everything below is derived from published artifacts, not from reading
 this repository.
 
 `bg-deploy` is now the shared core for BehindGate's CI integrations. The GitHub
-Action (`behindgate/deploy-action`) wraps it, and a Bitbucket Pipe and a GitLab
+Action (`behindgate/deploy`) wraps it, and a Bitbucket Pipe and a GitLab
 component are planned. All three are deliberately thin — none reimplements the
 deploy HTTP protocol — so anything the CLI does not expose, none of them can
 offer. That constraint motivates most of what follows.
@@ -393,7 +393,7 @@ Validate `<path>` before the token so path errors report themselves.
 ## Do not regress
 
 These behaviours are load-bearing for the CI integrations and are covered by
-tests in `behindgate/deploy-action`:
+tests in `behindgate/deploy`:
 
 - **Given a folder, the CLI zips its CONTENTS, not the folder.** `index.html` must
   land at the archive root, with no entry prefixed by the source folder name.
@@ -415,6 +415,6 @@ tests in `behindgate/deploy-action`:
 2. Updated release notes and download documentation covering versioned URLs,
    signature verification, the version-string change, and any exit-code change.
 3. A migration note for the downstream integrations saying which changes are
-   additive and which need a coordinated update — `behindgate/deploy-action` can
+   additive and which need a coordinated update — `behindgate/deploy` can
    drop its pinned checksum table and its scheduled bump job once signing and
    versioned URLs are live.

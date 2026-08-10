@@ -87,6 +87,6 @@ jobs:
             echo "The floating \`$MAJOR\` tag now points at \`$TAG\`."
             echo ""
             echo '```yaml'
-            echo "- uses: behindgate/deploy-action@$MAJOR"
+            echo "- uses: behindgate/deploy@$MAJOR"
             echo '```'
           } >> "$GITHUB_STEP_SUMMARY"

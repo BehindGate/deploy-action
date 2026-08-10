@@ -1,4 +1,4 @@
-# Maintaining `behindgate/deploy-action`
+# Maintaining `behindgate/deploy`
 
 ## Releasing
 
@@ -16,7 +16,7 @@ Releases are proposed automatically and cut by a human.
    bundle, **refuses to continue** if the tagged `dist/` does not match a fresh
    build, and force-updates the floating major tag (`v1`).
 
-Users reference `behindgate/deploy-action@v1`, so the floating tag is what
+Users reference `behindgate/deploy@v1`, so the floating tag is what
 actually runs.
 
 **Only the major tag ever moves.** `v1.2.3` is immutable by convention, and both

@@ -1,6 +1,6 @@
 # Deploy to BehindGate
 
-[![CI](https://github.com/behindgate/deploy-action/actions/workflows/ci.yml/badge.svg)](https://github.com/behindgate/deploy-action/actions/workflows/ci.yml)
+[![CI](https://github.com/behindgate/deploy/actions/workflows/ci.yml/badge.svg)](https://github.com/behindgate/deploy/actions/workflows/ci.yml)
 
 Deploy a static site to [BehindGate](https://behindgate.net) in one step.
 
@@ -30,7 +30,7 @@ jobs:
           node-version: 22
       - run: npm ci && npm run build
 
-      - uses: behindgate/deploy-action@v1
+      - uses: behindgate/deploy@v1
         with:
           path: dist
           token: ${{ secrets.BEHINDGATE_TOKEN }}
@@ -82,7 +82,7 @@ succeeding somewhere else. Both behaviours are covered in
 [`test/integration/deploy.test.js`](test/integration/deploy.test.js).
 
 ```yaml
-- uses: behindgate/deploy-action@v1
+- uses: behindgate/deploy@v1
   with:
     path: dist
     token: ${{ secrets.BEHINDGATE_TOKEN }}
@@ -231,7 +231,7 @@ an archive name that would not exist.
 
 ```yaml
 include:
-  - component: $CI_SERVER_FQDN/behindgate/deploy-action/deploy@v1
+  - component: $CI_SERVER_FQDN/behindgate/deploy/deploy@v1
     inputs:
       path: dist
       url: https://app.behindgate.com/api/deploy
