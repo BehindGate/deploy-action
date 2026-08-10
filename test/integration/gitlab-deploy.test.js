@@ -46,12 +46,18 @@ before(async () => {
 
   cliVersion = cli.version;
 
-  // Served under the same layout the real host uses, so the URL the script
-  // builds is exercised rather than stubbed.
-  const files = new Map([
-    [`${cli.version}/${cli.artifact.archive}`, fs.readFileSync(cli.archivePath)],
-  ]);
-  downloads = await startDownloadServer(files);
+  // A throw in here is reported as cancelled subtests rather than as a failure,
+  // which hides the reason completely. Turn it into a skip that names it.
+  try {
+    // Served under the same layout the real host uses, so the URL the script
+    // builds is exercised rather than stubbed.
+    const files = new Map([
+      [`${cli.version}/${cli.artifact.archive}`, fs.readFileSync(cli.archivePath)],
+    ]);
+    downloads = await startDownloadServer(files);
+  } catch (error) {
+    skipReason = `could not stage the CLI archive for the local download host: ${error.message}`;
+  }
 }, { timeout: 120000 });
 
 after(async () => {

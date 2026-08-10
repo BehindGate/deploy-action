@@ -53,7 +53,16 @@ async function acquireRealCli() {
     return { binary, archivePath, artifact, version, platform };
   }
 
-  fs.mkdirSync(installDir, { recursive: true });
+  fs.mkdirSync(TMP_DIR, { recursive: true });
+
+  // Everything below publishes into the cache by rename, which is atomic within
+  // a directory. `node --test` runs each test FILE in its own process, and more
+  // than one of them calls this, so a plain write would let one process read an
+  // archive another is still writing -- a half-written file that fails its
+  // checksum, or a partially extracted binary. Both surface as a thrown `before`
+  // hook, which the runner reports as cancelled subtests rather than as a
+  // failure, so the cause is invisible in the log.
+  const unique = `${process.pid}.partial`;
 
   if (!fs.existsSync(archivePath)) {
     const url = versions.downloadUrl(baseUrl, version, artifact.archive);
@@ -66,14 +75,31 @@ async function acquireRealCli() {
     if (!response.ok) {
       return { skip: `could not download ${url}: HTTP ${response.status}` };
     }
-    fs.writeFileSync(archivePath, Buffer.from(await response.arrayBuffer()));
+
+    const partial = `${archivePath}.${unique}`;
+    fs.writeFileSync(partial, Buffer.from(await response.arrayBuffer()));
+    fs.renameSync(partial, archivePath);
   }
 
   // Same verification the Action performs, against the same committed table.
   await verifyFileChecksum(archivePath, artifact.sha256, { source: baseUrl });
 
-  execFileSync('tar', ['-xzf', archivePath, '-C', installDir]);
-  fs.chmodSync(binary, 0o755);
+  if (!fs.existsSync(binary)) {
+    const staging = `${installDir}.${unique}`;
+    fs.rmSync(staging, { recursive: true, force: true });
+    fs.mkdirSync(staging, { recursive: true });
+
+    execFileSync('tar', ['-xzf', archivePath, '-C', staging]);
+    fs.chmodSync(path.join(staging, artifact.binary), 0o755);
+
+    try {
+      fs.renameSync(staging, installDir);
+    } catch {
+      // Another process published first. Its copy came from the same verified
+      // archive, so use it and drop ours.
+      fs.rmSync(staging, { recursive: true, force: true });
+    }
+  }
 
   return { binary, archivePath, artifact, version, platform };
 }
