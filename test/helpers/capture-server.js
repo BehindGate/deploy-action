@@ -23,7 +23,7 @@ const http = require('node:http');
 function startCaptureServer(options = {}) {
   const {
     releaseId = 'rel_test_0001',
-    liveUrl = 'https://demo.test.behindgate.net/my-app/',
+    liveUrl = 'https://demo.example.test/my-app/',
     pollsBeforeReady = 1,
     failCreateWith = null,
   } = options;

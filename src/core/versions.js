@@ -76,7 +76,7 @@ function resolveArtifact(version, platform, table = DEFAULT_TABLE) {
 }
 
 /**
- * Normalise a vendor version string into valid semver, or null if it cannot be.
+ * Normalise a CLI version string into valid semver, or null if it cannot be.
  *
  * This exists because tool caches key on semver, and BehindGate's version
  * strings are not valid semver: `2026.07.1` has a leading zero in the minor
@@ -105,7 +105,7 @@ function semverSafeVersion(version) {
  * Build the download URL for an archive.
  *
  * Versioned and immutable: `/downloads/<version>/<archive>`. Until 2026.8.x the
- * vendor published only unversioned paths, which meant a pinned checksum was a
+ * published paths carried no version, which meant a pinned checksum was a
  * pin against a moving target -- the host could serve different bytes under the
  * same name at any time. Requesting the version by name makes `cli-version` an
  * actual pin, and makes rollback to a previous release possible.

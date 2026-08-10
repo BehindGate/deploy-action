@@ -95,7 +95,7 @@ bg-deploy 2026.07.1" — so the mapping is discoverable without reading
 
 ## Adding a new `bg-deploy` version
 
-Downloads are versioned and immutable, and the vendor publishes a release index
+Downloads are versioned and immutable, and BehindGate publishes a release index
 at `/downloads/index.json`, so adopting a new release is a single command.
 
 ```bash
@@ -147,8 +147,7 @@ To add a genuinely new version, copy the existing block in
 `node script/checksums.js write --version <new>`. Bump `defaultVersion` in the
 same commit if the new version should become the default.
 
-Confirm the version string with `bg-deploy --version`, which prints e.g.
-`bg-deploy 2026.07.1 (git 79f1f9f)`.
+Confirm the version string with `bg-deploy --version`.
 
 ## Hosts are per-environment
 
@@ -162,38 +161,19 @@ anything relative to whoever served it — keeping them as one field stops them
 drifting apart. `node script/checksums.js verify` defaults to that host, so CI
 asks "do these pins still describe their own source?".
 
-The two known environments are:
-
-| Environment | Host |
-| --- | --- |
-| Production | `https://app.behindgate.com` — note **.com**, not `.net` |
-| Test | `https://app.test.behindgate.net` |
-
-The pinned checksums for 2026.8.3 were captured from production. The test
-environment historically served byte-identical archives, but that has not been
-re-confirmed for this release — check it if you rely on it:
+The pinned checksums are captured from production. If you support another
+environment, verify the pins against it before relying on them:
 
 ```bash
-node script/checksums.js verify --base-url https://app.behindgate.com
-node script/checksums.js verify --base-url https://app.test.behindgate.net
+node script/checksums.js verify --base-url https://<environment-host>
 ```
 
-If a future release ever diverges between environments, give the table a
-per-environment dimension. Do **not** just overwrite the hashes with one host's
-values — that silently drops verification for the other environment.
+If a release ever diverges between environments, give the table a per-environment
+dimension. Do **not** simply overwrite the hashes with one host's values — that
+silently drops verification for the other environment.
 
-> `app.behindgate.net` (`.net`) does not resolve and never did; an early draft of
-> this Action defaulted to it, and CI caught it as `fetch failed` across all five
-> platforms. If a checksum job reports unreachability rather than a mismatch,
-> suspect the hostname before suspecting the pins.
-
-## Upstream CLI work
-
-Several limitations in this Action are really limitations of the CLI's release
-process — unversioned download URLs, no machine-readable output, checksums served
-by the host they describe. [`app-repo-release-prompt.md`](app-repo-release-prompt.md)
-is a ready-to-hand-over brief covering those, with the evidence behind each and
-acceptance criteria. Tracked here as #2 and #3.
+If a checksum job reports unreachability rather than a mismatch, suspect the
+configured hostname before suspecting the pins.
 
 ## Why `dist/` is committed
 
@@ -228,5 +208,5 @@ gated on the secret being present.
 ```bash
 npm run test:unit
 npm run test:integration
-BG_DOWNLOAD_BASE_URL=https://app.test.behindgate.net npm run test:integration
+BG_DOWNLOAD_BASE_URL=https://<your-environment-host> npm run test:integration
 ```

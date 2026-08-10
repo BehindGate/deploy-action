@@ -58,11 +58,11 @@ describe('versions table', () => {
 });
 
 describe('semverSafeVersion', () => {
-  // Regression guard. The vendor's own format has a leading zero in the minor
+  // Regression guard. The CLI's own format has a leading zero in the minor
   // component, which is not valid semver. Passing it straight to the tool cache
   // turns an exact lookup into a range match, which never hits -- so the CLI is
   // re-downloaded on every run and the caching requirement is quietly defeated.
-  test('normalises the vendor format by stripping leading zeros', () => {
+  test('normalises the CLI format by stripping leading zeros', () => {
     assert.equal(versions.semverSafeVersion('2026.07.1'), '2026.7.1');
     assert.equal(versions.semverSafeVersion('2026.01.09'), '2026.1.9');
   });
@@ -115,8 +115,8 @@ describe('downloadUrl', () => {
   test('honours a non-production host', () => {
     // Hosts are per-environment; nothing may hardcode production.
     assert.equal(
-      versions.downloadUrl('https://app.test.behindgate.net', '2026.8.3', 'x.tar.gz'),
-      'https://app.test.behindgate.net/downloads/2026.8.3/x.tar.gz'
+      versions.downloadUrl('https://alt.example.test', '2026.8.3', 'x.tar.gz'),
+      'https://alt.example.test/downloads/2026.8.3/x.tar.gz'
     );
   });
 

@@ -4,8 +4,8 @@
  * GitHub Actions entrypoint.
  *
  * This file is the ONLY place `@actions/*` may be imported. Everything with
- * reusable logic lives in `src/core/`, which stays runner-agnostic so the
- * planned Bitbucket Pipe and GitLab component can share it. This Action is a
+ * reusable logic lives in `src/core/`, which stays runner-agnostic so a wrapper
+ * for another CI system can share it. This Action is a
  * thin wrapper around the bg-deploy CLI and deliberately does not reimplement
  * the deploy HTTP protocol.
  */
@@ -34,7 +34,7 @@ const TOOL_NAME = 'bg-deploy';
 async function acquireCli({ version, platform, baseUrl }) {
   const artifact = versions.resolveArtifact(version, platform);
 
-  // The tool cache keys on semver, and the vendor's version strings are not
+  // The tool cache keys on semver, and the CLI's version strings are not
   // valid semver (`2026.07.1`). Store and look up under a normalised value, or
   // the lookup silently misses and every run re-downloads the CLI.
   const cacheVersion = versions.semverSafeVersion(version);

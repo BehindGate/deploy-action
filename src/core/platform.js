@@ -3,8 +3,8 @@
 /**
  * Runner platform resolution.
  *
- * Pure, dependency-free: no `@actions/*` imports, so Bitbucket Pipes and the
- * GitLab component can reuse this unchanged.
+ * Pure, dependency-free: no `@actions/*` imports, so a wrapper for another CI
+ * system can reuse this unchanged.
  */
 
 class UnsupportedPlatformError extends Error {
@@ -19,21 +19,21 @@ class UnsupportedPlatformError extends Error {
   }
 }
 
-/** Node's `process.platform` -> the vendor's OS token. */
+/** Node's `process.platform` -> the published OS token. */
 const OS_BY_NODE_PLATFORM = {
   linux: 'linux',
   darwin: 'darwin',
   win32: 'windows',
 };
 
-/** Node's `process.arch` -> the vendor's arch token. */
+/** Node's `process.arch` -> the published arch token. */
 const ARCH_BY_NODE_ARCH = {
   x64: 'amd64',
   arm64: 'arm64',
 };
 
 /**
- * Platforms the vendor actually publishes. Anything outside this set must fail
+ * Platforms BehindGate actually publishes. Anything outside this set must fail
  * loudly rather than guess at an archive name that would 404 (or worse, 403 to
  * an SPA fallback that returns HTML with a 200).
  *
@@ -50,7 +50,7 @@ const SUPPORTED = Object.freeze([
 ]);
 
 /**
- * Resolve a runner to a vendor platform key such as `linux-amd64`.
+ * Resolve a runner to a platform key such as `linux-amd64`.
  *
  * @param {string} [nodePlatform] defaults to `process.platform`
  * @param {string} [nodeArch] defaults to `process.arch`
@@ -66,7 +66,7 @@ function resolvePlatform(nodePlatform = process.platform, nodeArch = process.arc
 
   const key = `${os}-${arch}`;
 
-  // Belt and braces: the tables above can resolve a combination the vendor does
+  // Belt and braces: the tables above can resolve a combination BehindGate does
   // not publish, and guessing an archive name is worse than failing.
   if (!SUPPORTED.includes(key)) {
     throw new UnsupportedPlatformError(nodePlatform, nodeArch, SUPPORTED);

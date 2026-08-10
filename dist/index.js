@@ -28528,8 +28528,8 @@ module.exports = {
 /**
  * Runner platform resolution.
  *
- * Pure, dependency-free: no `@actions/*` imports, so Bitbucket Pipes and the
- * GitLab component can reuse this unchanged.
+ * Pure, dependency-free: no `@actions/*` imports, so a wrapper for another CI
+ * system can reuse this unchanged.
  */
 
 class UnsupportedPlatformError extends Error {
@@ -28544,21 +28544,21 @@ class UnsupportedPlatformError extends Error {
   }
 }
 
-/** Node's `process.platform` -> the vendor's OS token. */
+/** Node's `process.platform` -> the published OS token. */
 const OS_BY_NODE_PLATFORM = {
   linux: 'linux',
   darwin: 'darwin',
   win32: 'windows',
 };
 
-/** Node's `process.arch` -> the vendor's arch token. */
+/** Node's `process.arch` -> the published arch token. */
 const ARCH_BY_NODE_ARCH = {
   x64: 'amd64',
   arm64: 'arm64',
 };
 
 /**
- * Platforms the vendor actually publishes. Anything outside this set must fail
+ * Platforms BehindGate actually publishes. Anything outside this set must fail
  * loudly rather than guess at an archive name that would 404 (or worse, 403 to
  * an SPA fallback that returns HTML with a 200).
  *
@@ -28575,7 +28575,7 @@ const SUPPORTED = Object.freeze([
 ]);
 
 /**
- * Resolve a runner to a vendor platform key such as `linux-amd64`.
+ * Resolve a runner to a platform key such as `linux-amd64`.
  *
  * @param {string} [nodePlatform] defaults to `process.platform`
  * @param {string} [nodeArch] defaults to `process.arch`
@@ -28591,7 +28591,7 @@ function resolvePlatform(nodePlatform = process.platform, nodeArch = process.arc
 
   const key = `${os}-${arch}`;
 
-  // Belt and braces: the tables above can resolve a combination the vendor does
+  // Belt and braces: the tables above can resolve a combination BehindGate does
   // not publish, and guessing an archive name is worse than failing.
   if (!SUPPORTED.includes(key)) {
     throw new UnsupportedPlatformError(nodePlatform, nodeArch, SUPPORTED);
@@ -28693,7 +28693,7 @@ function resolveArtifact(version, platform, table = DEFAULT_TABLE) {
 }
 
 /**
- * Normalise a vendor version string into valid semver, or null if it cannot be.
+ * Normalise a CLI version string into valid semver, or null if it cannot be.
  *
  * This exists because tool caches key on semver, and BehindGate's version
  * strings are not valid semver: `2026.07.1` has a leading zero in the minor
@@ -28722,7 +28722,7 @@ function semverSafeVersion(version) {
  * Build the download URL for an archive.
  *
  * Versioned and immutable: `/downloads/<version>/<archive>`. Until 2026.8.x the
- * vendor published only unversioned paths, which meant a pinned checksum was a
+ * published paths carried no version, which meant a pinned checksum was a
  * pin against a moving target -- the host could serve different bytes under the
  * same name at any time. Requesting the version by name makes `cli-version` an
  * actual pin, and makes rollback to a previous release possible.
@@ -28767,8 +28767,8 @@ module.exports = {
  * GitHub Actions entrypoint.
  *
  * This file is the ONLY place `@actions/*` may be imported. Everything with
- * reusable logic lives in `src/core/`, which stays runner-agnostic so the
- * planned Bitbucket Pipe and GitLab component can share it. This Action is a
+ * reusable logic lives in `src/core/`, which stays runner-agnostic so a wrapper
+ * for another CI system can share it. This Action is a
  * thin wrapper around the bg-deploy CLI and deliberately does not reimplement
  * the deploy HTTP protocol.
  */
@@ -28797,7 +28797,7 @@ const TOOL_NAME = 'bg-deploy';
 async function acquireCli({ version, platform, baseUrl }) {
   const artifact = versions.resolveArtifact(version, platform);
 
-  // The tool cache keys on semver, and the vendor's version strings are not
+  // The tool cache keys on semver, and the CLI's version strings are not
   // valid semver (`2026.07.1`). Store and look up under a normalised value, or
   // the lookup silently misses and every run re-downloads the CLI.
   const cacheVersion = versions.semverSafeVersion(version);
@@ -30958,7 +30958,7 @@ module.exports = parseParams
 /***/ ((module) => {
 
 "use strict";
-module.exports = /*#__PURE__*/JSON.parse('{"comment":["Pinned SHA256 checksums for the bg-deploy CLI, keyed by version and platform.","","WHY THIS FILE EXISTS: the vendor publishes a SHA256SUMS.txt next to the binaries,","but it is served by the same host as the binaries themselves. It therefore proves","only that a download was not truncated in transit -- anyone able to serve a modified","binary can serve a matching checksum beside it. A hash committed to this repository","is the part that host cannot rewrite: changing it requires a commit that shows up in","git history and in code review.","","These values were computed locally from downloaded archives, not copied out of the","vendor\'s SHA256SUMS.txt (they were then compared against it, and agreed).","","Downloads are now VERSIONED and immutable (/downloads/<version>/<archive>), so a","pinned hash describes a specific published release rather than whatever the host","happens to be serving. Superseded versions stay listed here so `cli-version` can","roll back to one after a bad release.","","MINIMUM VERSION 2026.8.0. This Action reads the CLI\'s `--json` output, which does","not exist in earlier releases; 2026.07.1 and older also used a different exit-code","scheme. Do not add pre-2026.8.0 entries -- they would install and then fail.","","This table becomes unnecessary once the vendor signs releases: the Action could then","verify a signature at runtime and always take the current build. Tracked in the","hand-over brief at docs/app-repo-release-prompt.md."],"defaultVersion":"2026.8.3","defaultDownloadBaseUrl":"https://app.behindgate.com","versions":{"2026.8.3":{"capturedFrom":"https://app.behindgate.com","capturedAt":"2026-08-09","commit":"22a6604a71611ae47ba4ccdd18653fcd6eb14af3","platforms":{"linux-amd64":{"archive":"bg-deploy-linux-amd64.tar.gz","binary":"bg-deploy","sha256":"c68fbc53c21d42eb7628d2dc6aaf65683033ada12e2ace15976d83e52c4645f9"},"linux-arm64":{"archive":"bg-deploy-linux-arm64.tar.gz","binary":"bg-deploy","sha256":"abd3a018d81649ed2644d622e7389cdb86803d25c6c5d547f7028f80c4dc1770"},"darwin-amd64":{"archive":"bg-deploy-darwin-amd64.tar.gz","binary":"bg-deploy","sha256":"5c71f18d4ce06bc29023ed4ebfc6dd42b717c663961ffeea18f3b6f81b9e9cbc"},"darwin-arm64":{"archive":"bg-deploy-darwin-arm64.tar.gz","binary":"bg-deploy","sha256":"4a9f7907019d7e2cd2bfe734e31c70022efe1f0236935a2e941983ec071e10d8"},"windows-amd64":{"archive":"bg-deploy-windows-amd64.zip","binary":"bg-deploy.exe","sha256":"1015b2b04ef5b71c8b719fc2b780e0e454d2dd7571a81ef2434acb258e9352fa"},"windows-arm64":{"archive":"bg-deploy-windows-arm64.zip","binary":"bg-deploy.exe","sha256":"e48e6ee629c71b01ec67421fd416a5a78ccd9f203fc7f6b8c1a25aa1a2632be2"}}}}}');
+module.exports = /*#__PURE__*/JSON.parse('{"comment":["Pinned SHA256 checksums for the bg-deploy CLI, keyed by version and platform.","","The Action verifies every download against these values before extracting it, and","refuses to execute anything that does not match. They live here, in version control,","so changing one takes a commit that appears in history and in review. The values are","computed from the downloaded archives themselves.","","Downloads are versioned and immutable (/downloads/<version>/<archive>), so a pin","describes one specific published release. Superseded versions stay listed so that","`cli-version` can roll back to one after a bad release.","","MINIMUM VERSION 2026.8.0. The Action reads the CLI\'s `--json` output, which does not","exist in earlier releases, and older versions used a different exit-code scheme. Do","not add pre-2026.8.0 entries -- they would install cleanly and then fail at runtime.","","Run `node script/checksums.js verify` to re-check these, and `bump` to adopt a newly","published release. See docs/MAINTAINERS.md."],"defaultVersion":"2026.8.3","defaultDownloadBaseUrl":"https://app.behindgate.com","versions":{"2026.8.3":{"capturedFrom":"https://app.behindgate.com","capturedAt":"2026-08-09","commit":"22a6604a71611ae47ba4ccdd18653fcd6eb14af3","platforms":{"linux-amd64":{"archive":"bg-deploy-linux-amd64.tar.gz","binary":"bg-deploy","sha256":"c68fbc53c21d42eb7628d2dc6aaf65683033ada12e2ace15976d83e52c4645f9"},"linux-arm64":{"archive":"bg-deploy-linux-arm64.tar.gz","binary":"bg-deploy","sha256":"abd3a018d81649ed2644d622e7389cdb86803d25c6c5d547f7028f80c4dc1770"},"darwin-amd64":{"archive":"bg-deploy-darwin-amd64.tar.gz","binary":"bg-deploy","sha256":"5c71f18d4ce06bc29023ed4ebfc6dd42b717c663961ffeea18f3b6f81b9e9cbc"},"darwin-arm64":{"archive":"bg-deploy-darwin-arm64.tar.gz","binary":"bg-deploy","sha256":"4a9f7907019d7e2cd2bfe734e31c70022efe1f0236935a2e941983ec071e10d8"},"windows-amd64":{"archive":"bg-deploy-windows-amd64.zip","binary":"bg-deploy.exe","sha256":"1015b2b04ef5b71c8b719fc2b780e0e454d2dd7571a81ef2434acb258e9352fa"},"windows-arm64":{"archive":"bg-deploy-windows-arm64.zip","binary":"bg-deploy.exe","sha256":"e48e6ee629c71b01ec67421fd416a5a78ccd9f203fc7f6b8c1a25aa1a2632be2"}}}}}');
 
 /***/ })
 
