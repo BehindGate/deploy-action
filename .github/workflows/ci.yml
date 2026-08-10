@@ -69,6 +69,23 @@ jobs:
             exit 1
           fi
 
+  component:
+    name: The GitLab component is in sync with its source
+    runs-on: ubuntu-latest
+    steps:
+      - uses: actions/checkout@v4
+      - uses: actions/setup-node@v4
+        with:
+          node-version-file: .node-version
+          cache: npm
+      - run: npm ci
+
+      # The component cannot read versions.json at job time -- this repository is
+      # never checked out on a GitLab runner -- so the checksums are inlined into
+      # the shipped YAML. A stale inline copy would still verify, just against
+      # the wrong hash, and nothing at deploy time would notice.
+      - run: npm run build:gitlab -- --check
+
   checksums:
     name: versions.json matches the published artifacts
     runs-on: ubuntu-latest

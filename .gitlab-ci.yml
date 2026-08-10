@@ -1,0 +1,70 @@
+# Pipeline for this project when it is mirrored to GitLab as a CI/CD component.
+#
+# The component lives at templates/deploy.yml. GitLab resolves
+# `include: component: <host>/<path>/deploy@<version>` against the versions
+# published in the CI/CD Catalog, and a version is published by creating a
+# GitLab release for a tag -- which is what the `release` job below does.
+#
+# The GitHub workflows under .github/ remain the source of truth for the Action.
+# This file exists so the same repository can also serve the component.
+
+stages:
+  - test
+  - deploy
+  - release
+
+default:
+  image: node:24-alpine
+
+checks:
+  stage: test
+  script:
+    - npm ci
+    - npm run lint
+    - npm test
+    # The component ships its checksums inline, because this repository is never
+    # checked out on a runner. This is the gate that keeps that copy honest.
+    - npm run build:gitlab -- --check
+  rules:
+    - if: $CI_COMMIT_TAG
+      when: never
+    - when: always
+
+# A real deploy of the fixture site, using the component exactly as a consumer
+# would. Gated on the token being present, so forks and contributor pipelines --
+# which never receive it -- neither fail nor need credentials.
+include:
+  - local: templates/deploy.yml
+    inputs:
+      path: e2e/site
+      stage: deploy
+      job-name: e2e-deploy
+
+e2e-deploy:
+  rules:
+    - if: $BEHINDGATE_TOKEN == null
+      when: never
+    - if: $CI_COMMIT_BRANCH == $CI_DEFAULT_BRANCH
+  variables:
+    # The endpoint cannot come from the `url` input here, because inputs are
+    # resolved when the configuration is assembled and this value lives in a
+    # CI/CD variable. Overriding BG_URL on the job is the supported way in: a
+    # project variable of the same name cannot reach it, since the component
+    # already sets BG_URL at job level and job variables win.
+    BG_URL: $BEHINDGATE_DEPLOY_URL
+  environment:
+    name: e2e
+    url: $BEHINDGATE_URL
+
+# Publishing a GitLab release for a tag is what makes that version resolvable as
+# `deploy@<tag>` in the CI/CD Catalog.
+release:
+  stage: release
+  image: registry.gitlab.com/gitlab-org/release-cli:latest
+  rules:
+    - if: $CI_COMMIT_TAG =~ /^v\d+\.\d+\.\d+$/
+  script:
+    - echo "Publishing $CI_COMMIT_TAG to the CI/CD Catalog"
+  release:
+    tag_name: $CI_COMMIT_TAG
+    description: Deploy to BehindGate $CI_COMMIT_TAG

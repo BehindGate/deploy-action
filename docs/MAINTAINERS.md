@@ -195,17 +195,42 @@ by the host they describe. [`app-repo-release-prompt.md`](app-repo-release-promp
 is a ready-to-hand-over brief covering those, with the evidence behind each and
 acceptance criteria. Tracked here as #2 and #3.
 
-## Why `dist/` is committed
+## Why `dist/` and `templates/` are committed
+
+Both are generated, and both are what consumers actually run.
 
 GitHub runs `dist/index.js` directly; there is no `npm install` at Action
-runtime. The `dist` job in CI rebuilds and fails on any diff, so the published
-bundle always corresponds to reviewed source.
+runtime. GitLab merges `templates/deploy.yml` into the consumer's pipeline, and
+this repository is never checked out on their runner — which is why the checksum
+table is inlined into that file rather than read from `versions.json` at job
+time. The `dist` and `component` jobs in CI rebuild both and fail on any diff.
 
-After changing anything under `src/`, run:
+After changing anything under `src/` — including `src/gitlab/` — run:
 
 ```bash
-npm run build && git add dist/
+npm run build && git add dist/ templates/ src/gitlab/
 ```
+
+`npm run build:gitlab` writes two files: the pin table inside
+`src/gitlab/deploy.sh`, and `templates/deploy.yml` assembled from
+`src/gitlab/component.yml` plus that script. Editing `templates/deploy.yml`
+directly is always wrong; the next build overwrites it.
+
+**Anything that changes `versions.json` changes the component too.** The
+`cli-update` workflow already stages `src/gitlab/deploy.sh` and `templates/`
+alongside `dist/` for that reason.
+
+## The GitLab component and the CI/CD Catalog
+
+`include: component:` resolves only against the catalog of the *same* GitLab
+instance, so the component is usable as a component only where this repository
+is mirrored — gitlab.com, or a self-managed instance. A version becomes
+resolvable when a GitLab release exists for its tag; [`.gitlab-ci.yml`](../.gitlab-ci.yml)
+has the `release` job that publishes one.
+
+Without a mirror, consumers can still use `include: remote:` against a tagged
+raw URL. That path needs nothing on the GitLab side and is what
+[`docs/gitlab-component.md`](gitlab-component.md) recommends for trying it out.
 
 ## Dependency updates
 

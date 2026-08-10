@@ -1,0 +1,115 @@
+# Source for templates/deploy.yml.
+#
+# Everything except the `script:` body lives here; the body is spliced in from
+# src/gitlab/deploy.sh by script/build-gitlab-template.js, so the shell stays a
+# real file that `sh -n` and the integration tests can drive directly.
+#
+# Edit this file, not templates/deploy.yml.
+
+spec:
+  inputs:
+    path:
+      description: >-
+        The folder to deploy, or an existing .zip to upload as-is. When given a
+        folder, the CLI zips its CONTENTS rather than the folder itself, so
+        index.html lands at the root of the archive, which is what the platform
+        requires. Point this at your build output (dist, build, public, ...),
+        not at the directory above it.
+      type: string
+
+    url:
+      description: >-
+        Pin the deploy endpoint instead of trusting the endpoint claim inside
+        the token. Strongly recommended. A deploy token is simultaneously a
+        bearer credential and a routing instruction, so anyone able to change
+        BEHINDGATE_TOKEN can point the upload at a host they control while the
+        job still succeeds. Pinning here puts the destination in a file that
+        code review and protected branches cover, and since CLI 2026.8.0 a
+        token whose own claim disagrees with this value is refused outright.
+        Example: https://app.behindgate.com/api/deploy
+      type: string
+      default: ''
+
+    cli-version:
+      description: >-
+        Escape hatch for holding a specific bg-deploy version after a bad
+        release. Normally leave this unset. BehindGate is a SaaS, so the server
+        moves whether or not your pipeline does; holding an old CLI buys no
+        reproducibility and only leaves you on a client the server has moved
+        past. Must be one of the versions pinned in this component -- an
+        unpinned version has no checksum to verify against. Minimum 2026.8.0,
+        which is where the CLI's --json output was introduced.
+      type: string
+      default: ''
+
+    download-base-url:
+      description: >-
+        The host to download the CLI from. Archives are fetched from
+        <download-base-url>/downloads/<version>/<archive>. BehindGate serves
+        downloads from a different host per environment, so this cannot be
+        hardcoded. Override it only when you target a non-production
+        environment; the pinned checksums must match whatever that host serves.
+      type: string
+      default: ''
+
+    stage:
+      description: The pipeline stage the deploy job runs in.
+      type: string
+      default: deploy
+
+    image:
+      description: >-
+        The image the job runs in. It needs a POSIX shell, tar, and either curl
+        or wget; the default provides all three. Override it only if your build
+        output needs something else present.
+      type: string
+      default: alpine:3.22
+
+    job-name:
+      description: >-
+        The name of the generated job. Redefine a job of this name in your own
+        .gitlab-ci.yml to override any key on it -- rules, needs, environment,
+        tags.
+      type: string
+      default: behindgate-deploy
+
+---
+
+"$[[ inputs.job-name ]]":
+  stage: $[[ inputs.stage ]]
+  image: $[[ inputs.image ]]
+
+  variables:
+    # Inputs reach the script as environment variables rather than being pasted
+    # into its text. GitLab interpolates parsed YAML values, so a path or a URL
+    # containing a quote cannot turn into shell syntax here.
+    BG_PATH: $[[ inputs.path ]]
+    BG_URL: $[[ inputs.url ]]
+    BG_CLI_VERSION: $[[ inputs.cli-version ]]
+    BG_DOWNLOAD_BASE_URL: $[[ inputs.download-base-url ]]
+
+  # Only the downloaded archive is cached, and it is re-hashed against the pin
+  # on every run before anything is extracted. A runner cache is shared and
+  # writable by other jobs, so a cached binary is not something to trust on
+  # sight -- but a cached archive that still matches the pin is exactly as
+  # trustworthy as a fresh download.
+  cache:
+    key: bg-deploy-archives
+    paths:
+      - .bg-deploy-cache/
+
+  # The GitLab counterpart of the Action's outputs. Jobs that `needs:` this one
+  # receive BEHINDGATE_RELEASE_ID and BEHINDGATE_URL as ordinary variables.
+  artifacts:
+    reports:
+      dotenv: behindgate.env
+
+  # A deploy on every branch is almost never what anyone wants. Override this
+  # by redefining the job in your own .gitlab-ci.yml.
+  rules:
+    - if: $CI_COMMIT_BRANCH == $CI_DEFAULT_BRANCH
+
+  script:
+    - |
+      # >>> BEGIN generated from src/gitlab/deploy.sh by script/build-gitlab-template.js
+      # <<< END generated

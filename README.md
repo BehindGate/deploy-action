@@ -7,6 +7,9 @@ Deploy a static site to [BehindGate](https://behindgate.net) in one step.
 This Action downloads the `bg-deploy` CLI, verifies it against a checksum
 committed in this repository, caches it across runs, and deploys your build.
 
+Using GitLab? The same thing ships here as a CI/CD component — see
+[`docs/gitlab-component.md`](docs/gitlab-component.md).
+
 ## Quick start
 
 ```yaml
@@ -220,18 +223,40 @@ cannot appear in a process listing or in the step's command echo.
 A runner outside that set fails with an explicit message rather than guessing at
 an archive name that would not exist.
 
-## Reusing this outside GitHub Actions
+## Outside GitHub Actions
 
-Bitbucket Pipes and a GitLab component are planned, and the CLI is the shared
-core. Everything reusable lives in [`src/core/`](src/core/) — platform
-resolution, the version/checksum table, checksum verification, output parsing,
-and exit-code mapping — with **no `@actions/*` imports** and no dependencies
-beyond Node builtins. Only [`src/index.js`](src/index.js) touches the Actions
-toolkit.
+**GitLab** is supported today, as a CI/CD component in
+[`templates/deploy.yml`](templates/deploy.yml).
+[`docs/gitlab-component.md`](docs/gitlab-component.md) covers it in full.
 
-Neither this Action nor any future wrapper reimplements the deploy HTTP
-protocol. That lives in the CLI, so all three integrations stay thin and cannot
-drift apart.
+```yaml
+include:
+  - component: $CI_SERVER_FQDN/behindgate/deploy-action/deploy@v1
+    inputs:
+      path: dist
+      url: https://app.behindgate.com/api/deploy
+```
+
+The token arrives as a masked `BEHINDGATE_TOKEN` CI/CD variable rather than as
+an input, because component inputs are visible in the project's expanded
+pipeline configuration.
+
+The CLI is the shared core, and neither wrapper reimplements the deploy HTTP
+protocol — so they stay thin and cannot drift apart in what a deploy does. What
+each *can* share depends on where it runs:
+
+- The Action runs Node on the runner, so it reuses [`src/core/`](src/core/) —
+  platform resolution, the checksum table, verification, output parsing,
+  exit-code mapping — with **no `@actions/*` imports** and no dependencies beyond
+  Node builtins. Only [`src/index.js`](src/index.js) touches the Actions toolkit.
+- The component is YAML merged into *your* pipeline, and this repository is never
+  checked out on a GitLab runner. It therefore cannot call into `src/core/` at
+  all, and is POSIX shell with the checksum table inlined. That inlining is
+  generated from the same `versions.json`, so the data has one source even though
+  the code does not.
+
+A Bitbucket Pipe would follow the Action's shape rather than the component's,
+since a Pipe is a container that can carry its own Node.
 
 ## Development
 
@@ -242,8 +267,9 @@ npm test          # unit + integration
 npm run build     # bundle to dist/ with @vercel/ncc
 ```
 
-`dist/` is committed because the Action runs it directly; CI fails if it drifts
-from source.
+`npm run build` produces two committed outputs, and CI fails if either drifts
+from source: `dist/`, which the Action runs directly, and
+[`templates/deploy.yml`](templates/deploy.yml), the GitLab component.
 
 The integration tests run the **real** CLI against a local capture server using
 a syntactically valid but fake JWT, so they need no credentials and run on

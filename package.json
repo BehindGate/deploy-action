@@ -2,14 +2,17 @@
   "name": "behindgate-deploy-action",
   "version": "1.0.0",
   "private": true,
-  "description": "GitHub Action that deploys a static site to BehindGate using the bg-deploy CLI",
+  "description": "GitHub Action and GitLab CI/CD component that deploy a static site to BehindGate using the bg-deploy CLI",
   "main": "dist/index.js",
   "engines": {
     "node": ">=20"
   },
   "scripts": {
-    "build": "ncc build src/index.js -o dist --license licenses.txt",
-    "lint": "eslint .",
+    "build": "npm run build:action && npm run build:gitlab",
+    "build:action": "ncc build src/index.js -o dist --license licenses.txt",
+    "build:gitlab": "node script/build-gitlab-template.js",
+    "lint": "eslint . && npm run lint:shell",
+    "lint:shell": "sh -n src/gitlab/deploy.sh",
     "test": "node --test \"test/**/*.test.js\"",
     "test:unit": "node --test \"test/unit/**/*.test.js\"",
     "test:integration": "node --test \"test/integration/**/*.test.js\"",
@@ -17,6 +20,7 @@
   },
   "keywords": [
     "actions",
+    "gitlab-ci",
     "behindgate",
     "deploy",
     "static-site"

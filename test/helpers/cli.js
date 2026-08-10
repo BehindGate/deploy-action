@@ -40,14 +40,20 @@ async function acquireRealCli() {
 
   const installDir = path.join(TMP_DIR, `${version}-${platform}`);
   const binary = path.join(installDir, artifact.binary);
-  if (fs.existsSync(binary)) return { binary };
-
-  fs.mkdirSync(installDir, { recursive: true });
 
   // Version-scoped: archive names are identical across releases, so caching by
   // bare name means a stale download from a previous version fails verification
   // against the new pin -- which looks like a checksum failure, not a stale file.
   const archivePath = path.join(TMP_DIR, `${version}-${artifact.archive}`);
+
+  // The archive is kept, not just the extracted binary: the GitLab component
+  // tests serve it from a local download host to exercise the fetch-and-verify
+  // path end to end.
+  if (fs.existsSync(binary) && fs.existsSync(archivePath)) {
+    return { binary, archivePath, artifact, version, platform };
+  }
+
+  fs.mkdirSync(installDir, { recursive: true });
 
   if (!fs.existsSync(archivePath)) {
     const url = versions.downloadUrl(baseUrl, version, artifact.archive);
@@ -69,7 +75,7 @@ async function acquireRealCli() {
   execFileSync('tar', ['-xzf', archivePath, '-C', installDir]);
   fs.chmodSync(binary, 0o755);
 
-  return { binary };
+  return { binary, archivePath, artifact, version, platform };
 }
 
 /** A throwaway static site: index.html at the top, plus a nested asset. */

@@ -58,14 +58,15 @@ jobs:
             exit 0
           fi
 
-          # versions.json is bundled into dist/, so the bundle moves with it.
+          # versions.json is bundled into dist/ and inlined into the GitLab
+          # component, so both move with it.
           npm run build
           npm test
 
           git config user.name  'github-actions[bot]'
           git config user.email 'github-actions[bot]@users.noreply.github.com'
           git checkout -b "$BRANCH"
-          git add versions.json dist/
+          git add versions.json dist/ src/gitlab/deploy.sh templates/
           git commit -m "Pin bg-deploy $VERSION
 
           Adopt the version currently published on the download host. Checksums
