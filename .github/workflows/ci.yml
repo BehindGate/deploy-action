@@ -86,6 +86,43 @@ jobs:
       # the wrong hash, and nothing at deploy time would notice.
       - run: npm run build:gitlab -- --check
 
+  pipe:
+    name: The Bitbucket Pipe image builds and runs
+    runs-on: ubuntu-latest
+    steps:
+      - uses: actions/checkout@v4
+
+      # The image is the Pipe: everything the entrypoint does is covered by the
+      # test suite, but nothing else proves the Dockerfile assembles or that the
+      # baked archive lands where the entrypoint looks for it.
+      - name: Build the image
+        run: docker build -t behindgate/deploy-pipe:ci .
+
+      # With no variables set the entrypoint must fail on the token before it
+      # touches anything else. A container that starts, finds its own baked CLI
+      # and reports the real problem is the whole smoke test.
+      - name: Refuse to run without a token
+        run: |
+          set -euo pipefail
+
+          if output=$(docker run --rm behindgate/deploy-pipe:ci 2>&1); then
+            echo "::error::The pipe exited 0 with no configuration at all."
+            exit 1
+          fi
+
+          echo "$output"
+          if ! grep -q "BEHINDGATE_TOKEN is empty" <<<"$output"; then
+            echo "::error::Expected the empty-token message; got the output above."
+            exit 1
+          fi
+
+      - name: The pinned archive is baked into the image
+        run: |
+          set -euo pipefail
+          version=$(node -p "require('./versions.json').defaultVersion")
+          docker run --rm --entrypoint ls behindgate/deploy-pipe:ci \
+            "/opt/bg-deploy/$version/bg-deploy-linux-amd64.tar.gz"
+
   checksums:
     name: versions.json matches the published artifacts
     runs-on: ubuntu-latest

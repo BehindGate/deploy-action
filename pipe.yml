@@ -1,0 +1,12 @@
+name: Deploy to BehindGate
+image: behindgate/deploy-pipe:1
+description: Deploy a static site to BehindGate, using a CLI verified against a checksum committed in this repository.
+category: Deployment
+repository: https://github.com/behindgate/deploy-action
+maintainer:
+  name: BehindGate
+  website: https://behindgate.net
+tags:
+  - deployment
+  - static-site
+  - behindgate

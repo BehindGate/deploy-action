@@ -1,0 +1,102 @@
+name: Publish the Bitbucket Pipe
+
+# The Pipe is a Docker image, so a release of this repository only reaches
+# Bitbucket users once the image is pushed. Gated on registry credentials being
+# present, so forks -- which never receive secrets -- neither fail nor need
+# them.
+#
+# Tags follow the repository's release tags rather than the CLI's: the Pipe is
+# this wrapper, and the CLI version it carries is data (see docs/MAINTAINERS.md).
+
+on:
+  release:
+    types: [published]
+  workflow_dispatch:
+    inputs:
+      tag:
+        description: 'Release tag to publish (e.g. v1.2.3)'
+        required: true
+        type: string
+
+permissions:
+  contents: read
+
+jobs:
+  check-credentials:
+    name: Check for registry credentials
+    runs-on: ubuntu-latest
+    outputs:
+      available: ${{ steps.check.outputs.available }}
+    steps:
+      # Secrets cannot be referenced in a job-level `if:`, so the presence check
+      # has to happen inside a step and be published as an output.
+      - id: check
+        env:
+          USERNAME: ${{ secrets.DOCKERHUB_USERNAME }}
+          TOKEN: ${{ secrets.DOCKERHUB_TOKEN }}
+        run: |
+          if [ -n "$USERNAME" ] && [ -n "$TOKEN" ]; then
+            echo "available=true" >> "$GITHUB_OUTPUT"
+          else
+            echo "available=false" >> "$GITHUB_OUTPUT"
+            echo "::notice::Docker Hub credentials are not set; skipping the pipe publish."
+          fi
+
+  publish:
+    name: Build and push
+    needs: check-credentials
+    if: needs.check-credentials.outputs.available == 'true'
+    runs-on: ubuntu-latest
+    steps:
+      - uses: actions/checkout@v4
+        with:
+          ref: ${{ inputs.tag || github.event.release.tag_name }}
+
+      - uses: docker/setup-qemu-action@v3
+      - uses: docker/setup-buildx-action@v3
+
+      - uses: docker/login-action@v3
+        with:
+          username: ${{ secrets.DOCKERHUB_USERNAME }}
+          password: ${{ secrets.DOCKERHUB_TOKEN }}
+
+      # Bitbucket Cloud runs amd64; arm64 is there for self-hosted runners. The
+      # Dockerfile reads TARGETARCH, which matches the vendor's platform tokens.
+      - name: Compute tags
+        id: tags
+        env:
+          TAG: ${{ inputs.tag || github.event.release.tag_name }}
+        run: |
+          set -euo pipefail
+
+          case "$TAG" in
+            v[0-9]*) ;;
+            *) echo "::error::Tag '$TAG' is not of the form vN.N.N"; exit 1 ;;
+          esac
+
+          VERSION="${TAG#v}"        # v1.2.3 -> 1.2.3
+          MAJOR="${VERSION%%.*}"    # 1.2.3  -> 1
+
+          {
+            echo "tags=behindgate/deploy-pipe:${VERSION},behindgate/deploy-pipe:${MAJOR}"
+            echo "version=${VERSION}"
+          } >> "$GITHUB_OUTPUT"
+
+      - uses: docker/build-push-action@v6
+        with:
+          context: .
+          platforms: linux/amd64,linux/arm64
+          push: true
+          tags: ${{ steps.tags.outputs.tags }}
+
+      - name: Summarise
+        env:
+          VERSION: ${{ steps.tags.outputs.version }}
+        run: |
+          {
+            echo "### Published behindgate/deploy-pipe:$VERSION"
+            echo ""
+            echo '```yaml'
+            echo "- pipe: docker://behindgate/deploy-pipe:${VERSION%%.*}"
+            echo '```'
+          } >> "$GITHUB_STEP_SUMMARY"

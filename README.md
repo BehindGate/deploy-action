@@ -7,8 +7,9 @@ Deploy a static site to [BehindGate](https://behindgate.net) in one step.
 This Action downloads the `bg-deploy` CLI, verifies it against a checksum
 committed in this repository, caches it across runs, and deploys your build.
 
-Using GitLab? The same thing ships here as a CI/CD component — see
-[`docs/gitlab-component.md`](docs/gitlab-component.md).
+Not on GitHub Actions? The same deploy ships here as a
+[GitLab CI/CD component](docs/gitlab-component.md) and a
+[Bitbucket Pipe](docs/bitbucket-pipe.md).
 
 ## Quick start
 
@@ -241,26 +242,49 @@ The token arrives as a masked `BEHINDGATE_TOKEN` CI/CD variable rather than as
 an input, because component inputs are visible in the project's expanded
 pipeline configuration.
 
-Like the Pipe, the component never writes to your project directory — which
-matters more here than it sounds: `path: .` deploys that directory, so anything
-left beside your source would be published as part of your site.
+The component never writes to your project directory — which matters more here
+than it sounds: `path: .` deploys that directory, so anything left beside your
+source would be published as part of your site.
 
-The CLI is the shared core, and neither wrapper reimplements the deploy HTTP
-protocol — so they stay thin and cannot drift apart in what a deploy does. What
-each *can* share depends on where it runs:
+**Bitbucket** is supported as a Pipe. [`docs/bitbucket-pipe.md`](docs/bitbucket-pipe.md)
+covers it in full.
 
-- The Action runs Node on the runner, so it reuses [`src/core/`](src/core/) —
+```yaml
+- pipe: docker://behindgate/deploy-pipe:1
+  variables:
+    DEPLOY_PATH: dist
+    BEHINDGATE_TOKEN: $BEHINDGATE_TOKEN
+    DEPLOY_URL: https://app.behindgate.com/api/deploy
+```
+
+The deploy path is `DEPLOY_PATH`, not `PATH`: Bitbucket injects pipe variables as
+environment variables, so `PATH` would replace the container's executable search
+path instead.
+
+The CLI is the shared core, and no wrapper reimplements the deploy HTTP protocol
+— so all three stay thin and cannot drift apart in what a deploy does. What each
+*can* share depends on where it runs:
+
+- The **Action** runs Node on the runner, so it reuses [`src/core/`](src/core/) —
   platform resolution, the checksum table, verification, output parsing,
   exit-code mapping — with **no `@actions/*` imports** and no dependencies beyond
   Node builtins. Only [`src/index.js`](src/index.js) touches the Actions toolkit.
-- The component is YAML merged into *your* pipeline, and this repository is never
-  checked out on a GitLab runner. It therefore cannot call into `src/core/` at
-  all, and is POSIX shell with the checksum table inlined. That inlining is
+- The **Pipe** is a container that carries its own filesystem, so it reuses
+  `src/core/` the same way. It goes further than the Action can: the verified CLI
+  archive is baked into the image at build time, so the common path involves no
+  download at all — and it is re-verified against the same pin on every run, so
+  an image altered after its build fails exactly as a tampered download would.
+- The **component** is YAML merged into *your* pipeline, and this repository is
+  never checked out on a GitLab runner. It therefore cannot call into `src/core/`
+  at all, and is POSIX shell with the checksum table inlined. That inlining is
   generated from the same `versions.json`, so the data has one source even though
   the code does not.
 
-A Bitbucket Pipe would follow the Action's shape rather than the component's,
-since a Pipe is a container that can carry its own Node.
+The token shape check is shared by all three
+([`src/core/validate.js`](src/core/validate.js)) and returns a code rather than a
+message: a token one wrapper accepts and another rejects would be a bug, but the
+wording has to differ — repository secrets, CI/CD variables and pipe variables
+live in three different places.
 
 ## Development
 
