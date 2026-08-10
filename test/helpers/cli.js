@@ -20,11 +20,26 @@ const { resolvePlatform } = require('../../src/core/platform');
 const TMP_DIR = path.join(__dirname, '..', '.tmp');
 
 /**
+ * Absolute path to tar, or null where there is none.
+ *
+ * Resolved from a fixed list rather than looked up on PATH. PATH is inherited
+ * from whoever starts the tests, so resolving through it means the suite
+ * unpacks the CLI with whichever `tar` happens to sit earliest in it -- a
+ * writable directory ahead of /usr/bin is all it takes to choose the binary
+ * that runs here.
+ */
+const TAR = ['/usr/bin/tar', '/bin/tar'].find((candidate) => fs.existsSync(candidate)) || null;
+
+/**
  * @returns {Promise<{binary: string} | {skip: string}>}
  */
 async function acquireRealCli() {
   if (process.platform === 'win32') {
     return { skip: 'integration tests use tar(1); not run on Windows' };
+  }
+
+  if (!TAR) {
+    return { skip: 'no tar at /usr/bin/tar or /bin/tar' };
   }
 
   let platform;
@@ -89,8 +104,12 @@ async function acquireRealCli() {
     fs.rmSync(staging, { recursive: true, force: true });
     fs.mkdirSync(staging, { recursive: true });
 
-    execFileSync('tar', ['-xzf', archivePath, '-C', staging]);
-    fs.chmodSync(path.join(staging, artifact.binary), 0o755);
+    execFileSync(TAR, ['-xzf', archivePath, '-C', staging]);
+
+    // Executable by its owner only. Nothing else runs this binary: the process
+    // that extracts it is the process that invokes it, so the group and world
+    // bits would grant reach to accounts that have no business with it.
+    fs.chmodSync(path.join(staging, artifact.binary), 0o700);
 
     try {
       fs.renameSync(staging, installDir);
