@@ -4,7 +4,12 @@
 /**
  * Fetch a pinned bg-deploy archive and verify it against versions.json.
  *
- *   node script/fetch-cli.js --platform linux-amd64 --out /opt/bg-deploy
+ *   node script/fetch-cli.js --platform linux-amd64
+ *
+ * Writes to /opt/bg-deploy/<version>/<archive>, which is where the Pipe's
+ * entrypoint looks. The destination is a constant rather than an argument: this
+ * has exactly one caller, and a path assembled from argv is a path that steers
+ * a filesystem write from the command line for no benefit.
  *
  * Used by the Bitbucket Pipe's Dockerfile to bake the archive into the image,
  * so the common path involves no download at run time.
@@ -22,13 +27,15 @@ const path = require('node:path');
 const versions = require('../src/core/versions');
 const { verifyFileChecksum } = require('../src/core/checksum');
 
+/** Where the Pipe's entrypoint looks for a baked archive. */
+const OUT_DIR = '/opt/bg-deploy';
+
 function parseArgs(argv) {
   const args = {};
   for (let i = 2; i < argv.length; i += 2) {
     const key = argv[i];
     const value = argv[i + 1];
     if (key === '--platform') args.platform = value;
-    else if (key === '--out') args.out = value;
     else if (key === '--version') args.version = value;
     else if (key === '--base-url') args.baseUrl = value;
     else throw new Error(`Unknown argument: ${key}`);
@@ -40,10 +47,9 @@ function parseArgs(argv) {
  * Every argument is checked before it reaches the network or the filesystem.
  *
  * This runs during `docker build` with arguments from the Dockerfile, so the
- * inputs are not hostile today. They are still the only things steering a fetch
- * and a write, and the checks are cheap: a version that is not pinned cannot
- * name a URL, a base URL that is not http(s) cannot be requested, and an output
- * directory that is not absolute cannot be resolved somewhere unintended.
+ * inputs are not hostile today. They are still the only things steering a fetch,
+ * and the checks are cheap: a version that is not pinned cannot name a URL, and
+ * a base URL that is not http(s) cannot be requested.
  */
 function validated(args) {
   const version = args.version || process.env.BG_CLI_VERSION || versions.defaultVersion();
@@ -71,23 +77,18 @@ function validated(args) {
     );
   }
 
-  const out = path.resolve(args.out);
-  if (!path.isAbsolute(out)) {
-    throw new Error(`The output directory (${args.out}) must be absolute.`);
-  }
-
-  return { version, baseUrl: baseUrl.href.replace(/\/+$/, ''), out };
+  return { version, baseUrl: baseUrl.href.replace(/\/+$/, '') };
 }
 
 async function main() {
   const args = parseArgs(process.argv);
 
-  if (!args.platform || !args.out) {
-    console.error('Usage: node script/fetch-cli.js --platform <p> --out <dir> [--version V] [--base-url URL]');
+  if (!args.platform) {
+    console.error('Usage: node script/fetch-cli.js --platform <p> [--version V] [--base-url URL]');
     process.exit(2);
   }
 
-  const { version, baseUrl, out } = validated(args);
+  const { version, baseUrl } = validated(args);
 
   // Throws with the known platforms listed when the pin is missing, which is a
   // far better build failure than a 404 halfway through. It also constrains the
@@ -103,10 +104,10 @@ async function main() {
     throw new Error(`HTTP ${response.status} for ${url}`);
   }
 
-  // Both components are now constrained: `out` is an absolute resolved path,
+  // Every component of the path is fixed or committed: OUT_DIR is a constant,
   // `version` is one of the keys in versions.json, and `artifact.archive` is the
-  // name committed there rather than anything derived from an argument.
-  const destination = path.join(out, version);
+  // name recorded there. None of it comes from argv.
+  const destination = path.join(OUT_DIR, version);
   fs.mkdirSync(destination, { recursive: true });
 
   const archivePath = path.join(destination, artifact.archive);

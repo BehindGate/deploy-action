@@ -23,7 +23,7 @@ COPY script/fetch-cli.js ./script/
 # time. Storing the archive rather than the unpacked binary keeps one code path
 # for baked and downloaded archives, and means an image altered after its build
 # is caught by the same check that catches a tampered download.
-RUN node script/fetch-cli.js --platform "linux-${TARGETARCH}" --out /opt/bg-deploy
+RUN node script/fetch-cli.js --platform "linux-${TARGETARCH}"
 
 FROM node:24-alpine
 
