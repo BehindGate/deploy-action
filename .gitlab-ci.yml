@@ -19,7 +19,10 @@ default:
 checks:
   stage: test
   script:
-    - npm ci
+    # --ignore-scripts for the same reason the GitHub workflows use it: an
+    # install that runs lifecycle scripts hands arbitrary code execution to any
+    # transitive dependency. Nothing here needs them.
+    - npm ci --ignore-scripts
     - npm run lint
     - npm test
     # The component ships its checksums inline, because this repository is never

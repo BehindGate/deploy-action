@@ -151,14 +151,28 @@ BG_ARCHIVE=$(printf '%s' "$bg_entry" | cut -d' ' -f1)
 BG_BINARY=$(printf '%s' "$bg_entry" | cut -d' ' -f2)
 BG_SHA256=$(printf '%s' "$bg_entry" | cut -d' ' -f3)
 
+# Resolved once, here, rather than inside bg_sha256_of. Every call to that
+# function happens in a command substitution, and an `exit` inside $(...) leaves
+# only the subshell -- the caller would carry on with an empty digest and report
+# a checksum mismatch against nothing, which is the least useful way to say that
+# the image has no hashing tool. It still fails safe, but the message sends you
+# hunting a tampered download that does not exist.
+if command -v sha256sum >/dev/null 2>&1; then
+  BG_SHA_TOOL='sha256sum'
+elif command -v shasum >/dev/null 2>&1; then
+  BG_SHA_TOOL='shasum -a 256'
+else
+  bg_fail \
+    'Neither sha256sum nor shasum is available in this image, so the download' \
+    'cannot be verified. Refusing to run an unverified binary.' \
+    '' \
+    'Use an image that provides one -- the default, alpine, does.'
+fi
+
+# Deliberately unquoted: BG_SHA_TOOL may carry arguments, and it holds only the
+# two fixed values set above.
 bg_sha256_of() {
-  if command -v sha256sum >/dev/null 2>&1; then
-    sha256sum "$1" | cut -d' ' -f1
-  elif command -v shasum >/dev/null 2>&1; then
-    shasum -a 256 "$1" | cut -d' ' -f1
-  else
-    bg_fail 'Neither sha256sum nor shasum is available, so the download cannot be verified. Refusing to run an unverified binary.'
-  fi
+  $BG_SHA_TOOL "$1" | cut -d' ' -f1
 }
 
 bg_download() {
