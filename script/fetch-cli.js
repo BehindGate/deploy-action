@@ -36,6 +36,49 @@ function parseArgs(argv) {
   return args;
 }
 
+/**
+ * Every argument is checked before it reaches the network or the filesystem.
+ *
+ * This runs during `docker build` with arguments from the Dockerfile, so the
+ * inputs are not hostile today. They are still the only things steering a fetch
+ * and a write, and the checks are cheap: a version that is not pinned cannot
+ * name a URL, a base URL that is not http(s) cannot be requested, and an output
+ * directory that is not absolute cannot be resolved somewhere unintended.
+ */
+function validated(args) {
+  const version = args.version || process.env.BG_CLI_VERSION || versions.defaultVersion();
+  const known = versions.knownVersions();
+
+  if (!known.includes(version)) {
+    throw new Error(
+      `bg-deploy ${version} is not pinned in versions.json. Known versions: ${known.join(', ')}.`
+    );
+  }
+
+  const rawBaseUrl =
+    args.baseUrl || process.env.BG_DOWNLOAD_BASE_URL || versions.defaultDownloadBaseUrl();
+
+  let baseUrl;
+  try {
+    baseUrl = new URL(rawBaseUrl);
+  } catch {
+    throw new Error(`The download base URL (${rawBaseUrl}) is not a URL.`);
+  }
+
+  if (baseUrl.protocol !== 'https:' && baseUrl.protocol !== 'http:') {
+    throw new Error(
+      `The download base URL (${rawBaseUrl}) must be http or https, not ${baseUrl.protocol}`
+    );
+  }
+
+  const out = path.resolve(args.out);
+  if (!path.isAbsolute(out)) {
+    throw new Error(`The output directory (${args.out}) must be absolute.`);
+  }
+
+  return { version, baseUrl: baseUrl.href.replace(/\/+$/, ''), out };
+}
+
 async function main() {
   const args = parseArgs(process.argv);
 
@@ -44,12 +87,12 @@ async function main() {
     process.exit(2);
   }
 
-  const version = args.version || process.env.BG_CLI_VERSION || versions.defaultVersion();
-  const baseUrl =
-    args.baseUrl || process.env.BG_DOWNLOAD_BASE_URL || versions.defaultDownloadBaseUrl();
+  const { version, baseUrl, out } = validated(args);
 
   // Throws with the known platforms listed when the pin is missing, which is a
-  // far better build failure than a 404 halfway through.
+  // far better build failure than a 404 halfway through. It also constrains the
+  // archive name to one this repository committed, rather than one composed
+  // from an argument.
   const artifact = versions.resolveArtifact(version, args.platform);
 
   const url = versions.downloadUrl(baseUrl, version, artifact.archive);
@@ -60,7 +103,10 @@ async function main() {
     throw new Error(`HTTP ${response.status} for ${url}`);
   }
 
-  const destination = path.join(args.out, version);
+  // Both components are now constrained: `out` is an absolute resolved path,
+  // `version` is one of the keys in versions.json, and `artifact.archive` is the
+  // name committed there rather than anything derived from an argument.
+  const destination = path.join(out, version);
   fs.mkdirSync(destination, { recursive: true });
 
   const archivePath = path.join(destination, artifact.archive);

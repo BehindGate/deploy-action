@@ -27,8 +27,12 @@ RUN node script/fetch-cli.js --platform "linux-${TARGETARCH}" --out /opt/bg-depl
 
 FROM node:24-alpine
 
-# tar is busybox's in this image and handles .tar.gz; the entrypoint resolves it
-# by absolute path rather than through PATH.
+# Runs as root, deliberately. Bitbucket bind-mounts the build directory into the
+# pipe container with the ownership the build container created -- root -- and
+# this pipe writes behindgate.env back into it. A non-root USER would fail that
+# write on every real runner, so the container stays root and stays disposable:
+# it holds no state, and the only code it runs is this entrypoint plus a CLI
+# verified against a checksum committed in this repository.
 COPY --from=cli /opt/bg-deploy /opt/bg-deploy
 
 WORKDIR /pipe

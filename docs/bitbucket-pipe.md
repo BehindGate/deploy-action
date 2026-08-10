@@ -159,8 +159,12 @@ identically before use.
 
 ## Supported platforms
 
-`linux/amd64` and `linux/arm64`. Bitbucket Cloud runs amd64; arm64 is there for
-self-hosted runners.
+`linux/amd64`, which is what Bitbucket Cloud runs.
+
+The Dockerfile reads `TARGETARCH` and would build `arm64` unchanged, but that
+needs QEMU emulation on the release runner and nothing here can exercise the
+result. It is left unpublished rather than shipped untested — relevant only for
+self-hosted runners on ARM.
 
 ## Failure messages
 
@@ -203,6 +207,12 @@ archive is where the entrypoint looks for it.
 `behindgate/deploy-pipe` on each published release, tagging both the full version
 and the floating major. It needs `DOCKERHUB_USERNAME` and `DOCKERHUB_TOKEN`
 repository secrets, and skips itself when they are absent.
+
+It uses no third-party actions. The job holds registry credentials, and every
+`uses:` in it would be code someone else can change under a mutable tag; the
+docker CLI is already on the runner. It also runs the built image once and
+checks it reports its configuration correctly before the credentials are
+anywhere near the shell.
 
 Consumers reference `docker://behindgate/deploy-pipe:1`, so the floating major
 tag is what actually runs — the same convention as `@v1` for the Action.
