@@ -20,7 +20,12 @@ const { build, generatePins, PLATFORMS } = require('../../script/build-gitlab-te
 const versions = require('../../src/core/versions');
 
 const ROOT = path.join(__dirname, '..', '..');
-const read = (relative) => fs.readFileSync(path.join(ROOT, relative), 'utf8');
+
+// Normalised for the same reason the build normalises: `.gitattributes` asks for
+// LF everywhere, but a working copy predating it can still hold CRLF, and these
+// assertions are about content rather than about how someone's Git is set up.
+const read = (relative) =>
+  fs.readFileSync(path.join(ROOT, relative), 'utf8').replace(/\r\n/g, '\n');
 
 describe('the generated GitLab component', () => {
   test('the committed files match a fresh build', () => {

@@ -140,6 +140,19 @@ function splice(source, { begin, end, lines, what }) {
   return [...existing.slice(0, from + 1), ...body, ...existing.slice(to)].join('\n');
 }
 
+/**
+ * Read a source file as LF-terminated text.
+ *
+ * `.gitattributes` checks these files out with LF everywhere, but a working
+ * copy created before that -- or one whose Git is configured otherwise -- can
+ * still hold CRLF. Splicing generated LF lines into CRLF ones would produce a
+ * file with mixed endings that differs from the committed one on Windows only,
+ * so normalise on the way in and always write LF.
+ */
+function readText(file) {
+  return fs.readFileSync(file, 'utf8').replace(/\r\n/g, '\n');
+}
+
 /** Drop the shebang: inside the YAML block scalar it would only be a comment. */
 function scriptBody(script) {
   const lines = script.replace(/\n+$/, '').split('\n');
@@ -147,16 +160,16 @@ function scriptBody(script) {
 }
 
 function build() {
-  const table = JSON.parse(fs.readFileSync(TABLE_PATH, 'utf8'));
+  const table = JSON.parse(readText(TABLE_PATH));
 
-  const script = splice(fs.readFileSync(SCRIPT_PATH, 'utf8'), {
+  const script = splice(readText(SCRIPT_PATH), {
     begin: PINS_BEGIN,
     end: PINS_END,
     lines: generatePins(table),
     what: 'src/gitlab/deploy.sh',
   });
 
-  const template = splice(fs.readFileSync(COMPONENT_PATH, 'utf8'), {
+  const template = splice(readText(COMPONENT_PATH), {
     begin: BODY_BEGIN,
     end: BODY_END,
     lines: scriptBody(script),
@@ -174,7 +187,7 @@ function main() {
   const stale = [];
 
   for (const output of build()) {
-    const current = fs.existsSync(output.path) ? fs.readFileSync(output.path, 'utf8') : null;
+    const current = fs.existsSync(output.path) ? readText(output.path) : null;
     if (current === output.next) continue;
 
     if (check) {
@@ -205,4 +218,4 @@ if (require.main === module) {
   main();
 }
 
-module.exports = { build, generatePins, splice, scriptBody, PLATFORMS };
+module.exports = { build, generatePins, splice, scriptBody, readText, PLATFORMS };
