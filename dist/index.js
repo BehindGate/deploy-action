@@ -28611,6 +28611,67 @@ module.exports = {
 
 /***/ }),
 
+/***/ 5527:
+/***/ ((module) => {
+
+"use strict";
+
+
+/**
+ * Shape checks every wrapper performs before invoking the CLI.
+ *
+ * Pure, dependency-free: no `@actions/*` imports.
+ *
+ * These return a code rather than a message, on purpose. The *logic* must not
+ * drift between the Action, the GitLab component and the Bitbucket Pipe -- a
+ * token the Action rejects and the Pipe accepts is a bug in one of them. The
+ * *wording* must differ: one talks about inputs and repository secrets, another
+ * about CI/CD variables, a third about pipe variables. Sharing a message would
+ * send people to a settings page their CI does not have.
+ */
+
+const TOKEN_OK = 'ok';
+const TOKEN_EMPTY = 'empty';
+const TOKEN_MALFORMED = 'malformed';
+
+/**
+ * Classify a deploy token by shape alone. Never inspects or returns the value
+ * beyond trimming it.
+ *
+ * The CLI exits 2 for both a missing and a malformed token, which is also how
+ * it reports a bad path and an endpoint mismatch. Separating them here is what
+ * lets each wrapper name the actual cause instead of listing four.
+ *
+ * @param {string} rawToken
+ * @returns {{code: 'ok'|'empty'|'malformed', token: string}}
+ */
+function classifyToken(rawToken) {
+  const token = String(rawToken ?? '').trim();
+
+  if (!token) return { code: TOKEN_EMPTY, token };
+
+  // Three base64url segments: header.payload.signature. A truncated, wrapped or
+  // quoted value fails here rather than several seconds later inside the CLI.
+  const segments = token.split('.');
+  const looksLikeJwt =
+    segments.length === 3 &&
+    segments[0].length > 0 &&
+    segments[1].length > 0 &&
+    segments.every((segment) => /^[A-Za-z0-9_-]*$/.test(segment));
+
+  return { code: looksLikeJwt ? TOKEN_OK : TOKEN_MALFORMED, token };
+}
+
+module.exports = {
+  classifyToken,
+  TOKEN_OK,
+  TOKEN_EMPTY,
+  TOKEN_MALFORMED,
+};
+
+
+/***/ }),
+
 /***/ 2200:
 /***/ ((module, __unused_webpack_exports, __nccwpck_require__) => {
 
@@ -28785,6 +28846,7 @@ const versions = __nccwpck_require__(2200);
 const { verifyFileChecksum } = __nccwpck_require__(8226);
 const { parseDeployJson, parseErrorMessage } = __nccwpck_require__(4234);
 const { describeExitCode, EXIT_SUCCESS } = __nccwpck_require__(6938);
+const { classifyToken, TOKEN_EMPTY, TOKEN_MALFORMED } = __nccwpck_require__(5527);
 
 const TOOL_NAME = 'bg-deploy';
 
@@ -28846,9 +28908,9 @@ async function acquireCli({ version, platform, baseUrl }) {
  * workflow, so this is by far the most common way the step goes wrong.
  */
 function validateToken(rawToken) {
-  const token = rawToken.trim();
+  const { code, token } = classifyToken(rawToken);
 
-  if (!token) {
+  if (code === TOKEN_EMPTY) {
     throw new Error(
       [
         'The `token` input is empty.',
@@ -28864,18 +28926,11 @@ function validateToken(rawToken) {
     );
   }
 
-  // bg-deploy exits 1 with "error: not a JWT" for this, which is the same exit
-  // code as a network failure or a rejected release. Checking here separates a
-  // malformed secret from a genuine deploy failure. The token itself is never
-  // included in the message.
-  const segments = token.split('.');
-  const looksLikeJwt =
-    segments.length === 3 &&
-    segments[0].length > 0 &&
-    segments[1].length > 0 &&
-    segments.every((segment) => /^[A-Za-z0-9_-]*$/.test(segment));
-
-  if (!looksLikeJwt) {
+  // The shape check lives in src/core/validate.js so the Action, the GitLab
+  // component and the Bitbucket Pipe cannot disagree about what a well-formed
+  // token is. Only the wording below is specific to Actions. The token itself
+  // is never included in the message.
+  if (code === TOKEN_MALFORMED) {
     throw new Error(
       [
         'The `token` input is not a well-formed JWT.',
