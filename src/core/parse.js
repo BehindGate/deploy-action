@@ -15,7 +15,7 @@
  * Reference stdout from a successful run (bg-deploy 2026.8.3):
  *
  *   {"releaseId":"rel_01J8ZQ","url":"https://demo.behindgate.com/my-app/",
- *    "endpoint":"https://app.behindgate.com/api/deploy","status":"published",
+ *    "endpoint":"https://app.behindgate.com/api/deploy/releases","status":"published",
  *    "version":"2026.8.3"}
  */
 

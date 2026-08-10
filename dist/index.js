@@ -28346,9 +28346,14 @@ function describeExitCode(code, context = {}) {
         'That refusal is the desired behaviour: a token whose endpoint claim ' +
           'disagrees with your pinned `url` is exactly what a swapped secret ' +
           'looks like. Check that:',
-        '  - `url` names the endpoint shown when you deploy without it, and',
+        '  - `url` matches the endpoint the CLI reports exactly, INCLUDING its ' +
+          'path. The comparison is an exact match, so pinning a prefix such as ' +
+          '".../api/deploy" will not match a token minted for ' +
+          '".../api/deploy/releases".',
         '  - the token really was issued for that environment ' +
-          '(a test-environment token cannot deploy to production).'
+          '(a test-environment token cannot deploy to production).',
+        '',
+        'The message above names both values; copy the one the token claims.'
       );
     } else {
       lines.push(
@@ -28427,7 +28432,7 @@ module.exports = {
  * Reference stdout from a successful run (bg-deploy 2026.8.3):
  *
  *   {"releaseId":"rel_01J8ZQ","url":"https://demo.behindgate.com/my-app/",
- *    "endpoint":"https://app.behindgate.com/api/deploy","status":"published",
+ *    "endpoint":"https://app.behindgate.com/api/deploy/releases","status":"published",
  *    "version":"2026.8.3"}
  */
 

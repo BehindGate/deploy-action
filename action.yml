@@ -45,7 +45,7 @@ inputs:
       refused outright rather than silently overridden. A swapped token then
       fails the job instead of quietly deploying somewhere else.
 
-      Example: https://app.behindgate.com/api/deploy
+      Example: https://app.behindgate.com/api/deploy/releases
     required: false
     default: ''
 

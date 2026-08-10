@@ -33,7 +33,7 @@ jobs:
           token: ${{ secrets.BEHINDGATE_TOKEN }}
           # Pin the endpoint rather than trusting the token's own claim.
           # See "Why you should pin url" for how to find yours.
-          url: https://app.behindgate.com/api/deploy
+          url: https://app.behindgate.com/api/deploy/releases
 ```
 
 Generate a deploy token in the BehindGate dashboard under **Settings → Deploy
@@ -83,18 +83,26 @@ succeeding somewhere else. Both behaviours are covered in
   with:
     path: dist
     token: ${{ secrets.BEHINDGATE_TOKEN }}
-    url: https://app.behindgate.com/api/deploy   # pinned, reviewable
+    url: https://app.behindgate.com/api/deploy/releases   # pinned, reviewable
 ```
 
 **Finding your endpoint.** Run the step once *without* `url`. The CLI reports the
 endpoint it used on its first line:
 
 ```
-Deploying to https://app.behindgate.com/api/deploy
+Deploying to https://app.behindgate.com/api/deploy/releases
 ```
 
-Copy that value into `url`. From then on the destination is fixed by your
-workflow rather than by the token.
+Copy that value into `url` **exactly, including its path** — the endpoint is not
+just the host, and the comparison is an exact match. Pinning a prefix of it, such
+as `https://app.behindgate.com/api/deploy`, does not match a token minted for
+`https://app.behindgate.com/api/deploy/releases`, and the deploy is refused with
+`url_mismatch`.
+
+Endpoints also differ per environment, so a value copied from another
+environment's token will not match either.
+
+From then on the destination is fixed by your workflow rather than by the token.
 
 **Write it as a literal.** You can also reference a repository or organisation
 variable (`url: ${{ vars.BEHINDGATE_URL }}`), which is convenient when one

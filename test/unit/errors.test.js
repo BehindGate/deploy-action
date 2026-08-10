@@ -32,6 +32,17 @@ describe('describeExitCode', () => {
     assert.match(detail, /test-environment token cannot deploy to production/);
   });
 
+  // A pinned prefix silently fails: the CLI compares the endpoint exactly, so
+  // ".../api/deploy" does not match a token minted for ".../api/deploy/releases".
+  // That is the mistake the message has to name, because nothing about it looks
+  // wrong in a workflow file.
+  test('exit 2 with a pinned url spells out that the path must match', () => {
+    const { detail } = describeExitCode(EXIT_CONFIG, { urlPinned: true });
+    assert.match(detail, /INCLUDING its path/);
+    assert.match(detail, /api\/deploy\/releases/);
+    assert.match(detail, /exact match/);
+  });
+
   test('exit 2 without a pinned url points at the secret instead', () => {
     const { detail } = describeExitCode(EXIT_CONFIG, { urlPinned: false });
     assert.match(detail, /empty string/);
