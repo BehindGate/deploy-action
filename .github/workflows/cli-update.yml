@@ -1,15 +1,13 @@
 name: CLI update
 
-# BehindGate's backend is a SaaS: it moves whether or not this repository does.
-# A pinned CLI therefore buys no reproducibility, and staying pinned to an old
-# build is a liability rather than a feature. But the only integrity mechanism
-# available today is a hash committed here -- the vendor publishes no signatures,
-# and a SHA256SUMS.txt served beside the binaries proves nothing.
+# BehindGate is a hosted service: the platform moves whether or not this
+# repository does, so staying on an old CLI buys nothing. The checksums pinned in
+# versions.json are about integrity rather than stability -- the Action executes
+# the downloaded binary on a runner, so it verifies what it runs.
 #
-# This job resolves that tension: it follows upstream automatically, while every
-# move is still a reviewed commit with verified hashes. When the CLI is signed
-# (see docs/app-repo-release-prompt.md), the Action can verify a signature at
-# runtime and this job -- along with the pinned table -- becomes unnecessary.
+# Verifying against a fixed hash and always taking the newest build are in
+# tension. This job resolves it: it follows the published releases automatically,
+# while every change of hash is still a reviewed commit.
 
 on:
   schedule:

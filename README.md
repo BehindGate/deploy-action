@@ -2,7 +2,7 @@
 
 [![CI](https://github.com/behindgate/deploy-action/actions/workflows/ci.yml/badge.svg)](https://github.com/behindgate/deploy-action/actions/workflows/ci.yml)
 
-Deploy a static site to [BehindGate](https://behindgate.net) in one step.
+Deploy a static site to [BehindGate](https://behindgate.com) in one step.
 
 This Action downloads the `bg-deploy` CLI, verifies it against a checksum
 committed in this repository, caches it across runs, and deploys your build.
@@ -33,7 +33,7 @@ jobs:
           token: ${{ secrets.BEHINDGATE_TOKEN }}
           # Pin the endpoint rather than trusting the token's own claim.
           # See "Why you should pin url" for how to find yours.
-          url: https://app.behindgate.com/api/deploy
+          url: https://app.behindgate.com/api/deploy/releases
 ```
 
 Generate a deploy token in the BehindGate dashboard under **Settings → Deploy
@@ -50,7 +50,7 @@ the site, so that `index.html` sits at the top of it.
 | `token` | yes | — | BehindGate deploy token. Always pass from a secret. |
 | `url` | no | — | Pin the deploy endpoint. **Strongly recommended** — see below. |
 | `cli-version` | no | `defaultVersion` from [`versions.json`](versions.json) | Escape hatch to hold a specific `bg-deploy` version after a bad release. Normally leave unset — see [Which CLI version you get](#which-cli-version-you-get). |
-| `download-base-url` | no | `https://app.behindgate.com` | Host to download the CLI from. Override only for non-production environments (for example `https://app.test.behindgate.net`). |
+| `download-base-url` | no | `https://app.behindgate.com` | Host to download the CLI from. Override only when targeting a non-production BehindGate environment. |
 
 ## Outputs
 
@@ -83,18 +83,26 @@ succeeding somewhere else. Both behaviours are covered in
   with:
     path: dist
     token: ${{ secrets.BEHINDGATE_TOKEN }}
-    url: https://app.behindgate.com/api/deploy   # pinned, reviewable
+    url: https://app.behindgate.com/api/deploy/releases   # pinned, reviewable
 ```
 
 **Finding your endpoint.** Run the step once *without* `url`. The CLI reports the
 endpoint it used on its first line:
 
 ```
-Deploying to https://app.behindgate.com/api/deploy
+Deploying to https://app.behindgate.com/api/deploy/releases
 ```
 
-Copy that value into `url`. From then on the destination is fixed by your
-workflow rather than by the token.
+Copy that value into `url` **exactly, including its path** — the endpoint is not
+just the host, and the comparison is an exact match. Pinning a prefix of it, such
+as `https://app.behindgate.com/api/deploy`, does not match a token minted for
+`https://app.behindgate.com/api/deploy/releases`, and the deploy is refused with
+`url_mismatch`.
+
+Endpoints also differ per environment, so a value copied from another
+environment's token will not match either.
+
+From then on the destination is fixed by your workflow rather than by the token.
 
 **Write it as a literal.** You can also reference a repository or organisation
 variable (`url: ${{ vars.BEHINDGATE_URL }}`), which is convenient when one
@@ -116,77 +124,44 @@ If you omit `url`, the Action emits a warning explaining what it is trusting.
 The Action pins a SHA256 for every platform in [`versions.json`](versions.json)
 and refuses to execute a download that does not match.
 
-BehindGate publishes a `SHA256SUMS.txt` next to the binaries, and the Action
-deliberately does **not** rely on it. That file is served by the same host as
-the binary it describes, so it proves only that a download was not corrupted in
-transit. Anyone able to serve a modified binary can serve a matching checksum
-beside it, and the check passes.
-
-A hash committed to *this* repository is the part that host cannot rewrite.
-Changing it requires a commit, which shows up in history and in review. The
-values in `versions.json` were computed locally from downloaded archives rather
-than copied out of the vendor's file — then compared against it, and they agreed.
+Those hashes live in this repository rather than being fetched at run time, so
+changing one takes a commit that appears in history and in review. They are
+computed from the downloaded archives themselves.
 
 Verification happens on the archive **before** it is extracted, so a tampered
 archive is never unpacked onto the runner. A mismatch fails the deploy; it never
 silently falls back to running the binary anyway.
 
-CI re-checks the pinned hashes against the live host on every run, so drift
-surfaces as a build failure rather than as a surprise mid-deploy.
+CI re-checks the pinned hashes against the published artifacts on every run, so
+any drift surfaces as a build failure rather than as a surprise mid-deploy.
 
 ## Which CLI version you get
 
 **Effectively the current one — you should not pin, and by default you don't.**
 
-BehindGate is a SaaS. The server moves whether or not your workflow does, so
-holding an old CLI buys you no reproducibility: the half that actually decides
-what a deploy does was never pinned in the first place. A stale client is a
-liability, not a safety measure — it drifts away from the server it talks to, and
-BehindGate cannot ship you a fix for a version you have frozen.
+BehindGate is a hosted service, so the platform moves whether or not your
+workflow does. Holding an old CLI therefore buys no reproducibility, and a stale
+client only drifts further from the service it talks to.
 
-So why does `versions.json` pin hashes at all? **Integrity, not stability.** This
-Action downloads a binary and executes it on your runner, next to your source,
-your build output and your secrets. That is arbitrary code execution inside your
-trust boundary, and it deserves verification regardless of how the backend is
-deployed. The only mechanism available today is a hash committed to this
-repository, because the vendor publishes no signatures and a `SHA256SUMS.txt`
-served beside the binaries proves nothing.
+The pinned hashes are about **integrity, not stability**. This Action downloads a
+binary and executes it on your runner, next to your source, your build output and
+your secrets, so it verifies what it runs before running it.
 
-Verifying against a fixed hash and always taking the newest build are, strictly,
-in tension. [`cli-update.yml`](.github/workflows/cli-update.yml) resolves it: a
-scheduled job reads the vendor's release index, verifies the newest build, and
-opens a pull request. New versions reach you through a normal release of this
-Action rather than through a frozen table someone has to remember to update —
-automatic, but with a reviewed commit behind every change of hash.
+[`cli-update.yml`](.github/workflows/cli-update.yml) keeps the pin current: a
+scheduled job reads the published release index, verifies the newest build and
+opens a pull request. New versions reach you through an ordinary release of this
+Action rather than through a table someone has to remember to update — automatic,
+but with a reviewed commit behind every change of hash.
 
-Downloads are versioned and immutable
-(`/downloads/<version>/<archive>`), so a pinned hash describes one specific
-published release and rollback is possible. `cli-version` exists as an escape
-hatch for the one case that genuinely needs it: a bad CLI release, where you want
-to hold the previous version until it is fixed. Superseded versions stay in the
-table for exactly that reason. It is not a stability feature, and using it
-routinely will leave you on a client the server has moved past.
+Downloads are versioned and immutable (`/downloads/<version>/<archive>`), so a
+pinned hash describes one specific published release and rollback is possible.
+`cli-version` exists as an escape hatch for the one case that genuinely needs it:
+holding the previous version after a bad CLI release. Superseded versions stay in
+the table for exactly that reason. Using it routinely will leave you on a client
+the service has moved past.
 
 **Minimum CLI version 2026.8.0.** This Action reads the CLI's `--json` output,
 which earlier releases do not have.
-
-Signing the releases would remove this machinery entirely — the Action could
-verify a signature at runtime and always take the current build. That is the
-highest-leverage item in
-[`docs/app-repo-release-prompt.md`](docs/app-repo-release-prompt.md).
-
-## Known gaps
-
-These are real limitations, tracked as issues rather than papered over.
-
-**Releases are not signed.** `versions.json` pins a hash per platform because
-that is the only integrity mechanism available: the vendor publishes no
-signatures, and the `SHA256SUMS.txt` served beside the binaries proves nothing
-(see above). A signature verifiable against a key that does not live on the
-download host would let this Action verify at runtime and always take the current
-build, removing the pinned table and the scheduled bump job entirely. It is the
-outstanding item in
-[`docs/app-repo-release-prompt.md`](docs/app-repo-release-prompt.md).
 
 ## Failure messages
 
@@ -222,16 +197,15 @@ an archive name that would not exist.
 
 ## Reusing this outside GitHub Actions
 
-Bitbucket Pipes and a GitLab component are planned, and the CLI is the shared
-core. Everything reusable lives in [`src/core/`](src/core/) — platform
-resolution, the version/checksum table, checksum verification, output parsing,
-and exit-code mapping — with **no `@actions/*` imports** and no dependencies
-beyond Node builtins. Only [`src/index.js`](src/index.js) touches the Actions
-toolkit.
+The CLI is the shared core, and this Action is a thin wrapper over it. Everything
+reusable lives in [`src/core/`](src/core/) — platform resolution, the
+version/checksum table, checksum verification, output parsing, and exit-code
+mapping — with **no `@actions/*` imports** and no dependencies beyond Node
+builtins. Only [`src/index.js`](src/index.js) touches the Actions toolkit, so the
+core can back a wrapper for another CI system unchanged.
 
-Neither this Action nor any future wrapper reimplements the deploy HTTP
-protocol. That lives in the CLI, so all three integrations stay thin and cannot
-drift apart.
+Nothing here reimplements the deploy HTTP protocol; that lives in the CLI, so any
+wrapper stays thin and they cannot drift apart.
 
 ## Development
 
@@ -254,7 +228,7 @@ would otherwise produce a broken site from a green deploy.
 To target a non-production environment:
 
 ```bash
-BG_DOWNLOAD_BASE_URL=https://app.test.behindgate.net npm run test:integration
+BG_DOWNLOAD_BASE_URL=https://<your-environment-host> npm run test:integration
 ```
 
 Pull request titles must be conventional commits — releases and the changelog

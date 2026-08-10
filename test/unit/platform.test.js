@@ -27,7 +27,7 @@ describe('resolvePlatform', () => {
     }
   });
 
-  test('windows-arm64 is supported since the vendor started publishing it', () => {
+  test('windows-arm64 is supported since BehindGate started publishing it', () => {
     // It used to be the one combination that resolved cleanly from the lookup
     // tables while having no published archive, and was rejected for that reason.
     assert.equal(resolvePlatform('win32', 'arm64'), 'windows-arm64');

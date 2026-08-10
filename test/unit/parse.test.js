@@ -13,12 +13,12 @@ const {
 /** Verbatim stdout from `bg-deploy --json` 2026.8.3 on a successful run. */
 const SUCCESS_STDOUT =
   '{"releaseId":"rel_01J8ZQ4M2N","url":"https://demo.behindgate.com/my-app/",' +
-  '"endpoint":"https://app.behindgate.com/api/deploy","status":"published",' +
+  '"endpoint":"https://app.behindgate.com/api/deploy/releases","status":"published",' +
   '"version":"2026.8.3"}\n';
 
 /** Human progress goes to stderr, and must never be parsed as the result. */
 const SUCCESS_STDERR = [
-  'Deploying to https://app.behindgate.com/api/deploy',
+  'Deploying to https://app.behindgate.com/api/deploy/releases',
   '  from public',
   'Requesting a release…',
   'Uploading 4210 bytes…',
@@ -32,7 +32,7 @@ describe('parseDeployJson', () => {
     assert.deepEqual(parseDeployJson(SUCCESS_STDOUT), {
       releaseId: 'rel_01J8ZQ4M2N',
       url: 'https://demo.behindgate.com/my-app/',
-      endpoint: 'https://app.behindgate.com/api/deploy',
+      endpoint: 'https://app.behindgate.com/api/deploy/releases',
       status: 'published',
       version: '2026.8.3',
     });
