@@ -261,6 +261,10 @@ The deploy path is `DEPLOY_PATH`, not `PATH`: Bitbucket injects pipe variables a
 environment variables, so `PATH` would replace the container's executable search
 path instead.
 
+The Pipe never writes to your checkout — it uploads a directory and reports the
+release to the log — so it runs unprivileged. A test snapshots the checkout
+around a real deploy and fails on any difference.
+
 The CLI is the shared core, and no wrapper reimplements the deploy HTTP protocol
 — so all three stay thin and cannot drift apart in what a deploy does. What each
 *can* share depends on where it runs:

@@ -11,6 +11,16 @@
  *
  * Like both siblings, it wraps the bg-deploy CLI and never reimplements the
  * deploy HTTP protocol.
+ *
+ * THE CHECKOUT IS READ-ONLY. This pipe uploads a directory; that is its whole
+ * contract, and it needs nothing written back to do it. Everything it produces
+ * -- the CLI it unpacks, the archive it verifies -- lives under a temporary
+ * directory it creates and removes. An earlier draft wrote a behindgate.env
+ * next to the user's source so a later step could read the release id, which
+ * nothing consumed unless the user opted in, and which forced the container to
+ * run as root in order to write into a root-owned mount. Both costs were paid
+ * for a feature the contract never promised. The release id and deployed
+ * address go to the log, which is where they are actually read.
  */
 
 const fs = require('node:fs');
@@ -177,22 +187,6 @@ async function acquireCli({ version, platform, baseUrl, workDir }) {
   return binary;
 }
 
-/**
- * Publish the results where a later step can pick them up.
- *
- * Bitbucket steps do not share an environment, so a file in the build directory
- * is the handoff. Written even when a field is missing, so a consumer can tell
- * "deployed, address unknown" from "never ran".
- */
-function writeOutputs(cloneDir, { releaseId, url }) {
-  const file = path.join(cloneDir, 'behindgate.env');
-  fs.writeFileSync(
-    file,
-    `BEHINDGATE_RELEASE_ID=${releaseId || ''}\nBEHINDGATE_URL=${url || ''}\n`
-  );
-  return file;
-}
-
 async function run() {
   // Bitbucket mounts the checkout at BITBUCKET_CLONE_DIR. Anchoring to it means
   // a relative DEPLOY_PATH resolves against the repository rather than against
@@ -274,22 +268,23 @@ async function run() {
     if (!parsed) {
       console.error(
         'WARNING: bg-deploy reported success but its --json output could not be\n' +
-          'WARNING: parsed, so behindgate.env will be empty. This usually means the\n' +
-          'WARNING: CLI changed its output contract; please open an issue.'
+          'WARNING: parsed, so the release cannot be named below. The deploy itself\n' +
+          'WARNING: succeeded. This usually means the CLI changed its output\n' +
+          'WARNING: contract; please open an issue.'
       );
     }
 
     const releaseId = parsed?.releaseId || '';
     const deployedUrl = parsed?.url || '';
 
-    const outputs = writeOutputs(cloneDir, { releaseId, url: deployedUrl });
-
+    // Reported to the log and nowhere else. This pipe does not write to the
+    // repository -- see the note on run() for why that is a contract rather
+    // than an omission.
     info(
       deployedUrl
         ? `Deployed release ${releaseId || '(unknown)'} to ${deployedUrl}`
         : `Deployed release ${releaseId || '(unknown)'}`
     );
-    info(`Wrote ${path.relative(cloneDir, outputs)}`);
   } finally {
     fs.rmSync(workDir, { recursive: true, force: true });
   }
@@ -302,4 +297,4 @@ if (require.main === module) {
   });
 }
 
-module.exports = { run, acquireCli, resolveDeployPath, resolveToken, writeOutputs, PipeError };
+module.exports = { run, acquireCli, resolveDeployPath, resolveToken, PipeError };

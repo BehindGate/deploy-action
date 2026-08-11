@@ -111,20 +111,32 @@ function runPipe(cloneDir, variables = {}, { baked = true } = {}) {
   });
 }
 
-function readOutputs(cloneDir) {
-  const file = path.join(cloneDir, 'behindgate.env');
-  if (!fs.existsSync(file)) return null;
+/**
+ * Every file under a directory, with its size and mode.
+ *
+ * The pipe promises never to write to the checkout, and a promise about the
+ * filesystem is only worth what a filesystem check says it is worth.
+ */
+function snapshot(dir) {
+  const entries = [];
 
-  return Object.fromEntries(
-    fs
-      .readFileSync(file, 'utf8')
-      .split('\n')
-      .filter(Boolean)
-      .map((line) => {
-        const at = line.indexOf('=');
-        return [line.slice(0, at), line.slice(at + 1)];
-      })
-  );
+  (function walk(absolute, relative) {
+    for (const entry of fs.readdirSync(absolute, { withFileTypes: true }).sort((a, b) =>
+      a.name.localeCompare(b.name)
+    )) {
+      const next = path.join(absolute, entry.name);
+      const key = path.posix.join(relative, entry.name);
+      if (entry.isDirectory()) {
+        entries.push(`dir  ${key}`);
+        walk(next, key);
+      } else {
+        const stat = fs.statSync(next);
+        entries.push(`file ${key} ${stat.size} ${(stat.mode & 0o777).toString(8)}`);
+      }
+    }
+  })(dir, '');
+
+  return entries;
 }
 
 describe('the Bitbucket Pipe deploys', () => {
@@ -148,9 +160,9 @@ describe('the Bitbucket Pipe deploys', () => {
       );
       assert.equal(capture.uploads.length, 1, 'expected exactly one upload');
 
-      const outputs = readOutputs(cloneDir);
-      assert.equal(outputs.BEHINDGATE_RELEASE_ID, 'rel_test_0001');
-      assert.equal(outputs.BEHINDGATE_URL, 'https://demo.test.behindgate.net/my-app/');
+      // Reported to the log, written nowhere.
+      assert.match(result.output, /Deployed release rel_test_0001/);
+      assert.match(result.output, /https:\/\/demo\.test\.behindgate\.net\/my-app\//);
     } finally {
       await capture.close();
     }
@@ -170,6 +182,28 @@ describe('the Bitbucket Pipe deploys', () => {
       assert.match(result.output, /Downloading bg-deploy/);
       assert.ok(downloads.requests.length > before, 'expected a download');
       assert.equal(capture.uploads.length, 1);
+    } finally {
+      await capture.close();
+    }
+  }, { timeout: 120000 });
+
+  test('leaves the checkout byte-for-byte untouched', async (t) => {
+    if (skipReason) return t.skip(skipReason);
+
+    // The contract is: upload a directory. Nothing about that requires writing
+    // to someone's repository, and an earlier draft that dropped a
+    // behindgate.env beside their source is what forced this container to run
+    // as root. This is the assertion that keeps it honest.
+    const cloneDir = makeCloneDir();
+    const capture = await startCaptureServer();
+    const before = snapshot(cloneDir);
+
+    try {
+      const result = await runPipe(cloneDir, { DEPLOY_URL: capture.url });
+
+      assert.equal(result.code, 0, `pipe failed:\n${result.output}`);
+      assert.equal(capture.uploads.length, 1, 'the deploy must still have happened');
+      assert.deepEqual(snapshot(cloneDir), before, 'the pipe wrote to the checkout');
     } finally {
       await capture.close();
     }
@@ -208,7 +242,7 @@ describe('the Bitbucket Pipe deploys', () => {
 
       assert.equal(result.code, 0, `pipe failed:\n${result.output}`);
       assert.equal(capture.uploads.length, 1);
-      assert.ok(fs.existsSync(path.join(cloneDir, 'behindgate.env')));
+      assert.match(result.output, /Deployed release/);
     } finally {
       await capture.close();
     }
@@ -229,7 +263,6 @@ describe('the Bitbucket Pipe refuses to run an unverified binary', () => {
       assert.notEqual(result.code, 0, 'a tampered download must fail the step');
       assert.match(result.output, /Checksum verification failed/);
       assert.equal(capture.requests.length, 0, 'the CLI must never have run');
-      assert.ok(!fs.existsSync(path.join(cloneDir, 'behindgate.env')));
     } finally {
       downloads.corrupt = false;
       await capture.close();

@@ -77,38 +77,29 @@ An unset variable expands to an empty string rather than failing the build, so
 the pipe checks for that explicitly and names it — it is the most common way
 this step goes wrong.
 
-## Outputs
+## It never writes to your repository
 
-The pipe writes **`behindgate.env`** into the build directory:
+The pipe uploads a directory. That is the whole contract, and nothing about it
+requires writing anything back, so it doesn't — the checkout is read-only from
+the pipe's point of view.
+
+Everything it produces lives under a temporary directory it creates and removes:
+the CLI it unpacks, and the archive it verifies. An integration test snapshots
+the checkout before and after a real deploy and fails on any difference, so this
+is enforced rather than merely intended.
+
+That is also why the container runs **unprivileged** (`USER node`). A pipe that
+wrote into the build directory would need to match the ownership of a root-owned
+mount; one that only reads does not.
+
+The release id and the deployed address are reported to the step log:
 
 ```
-BEHINDGATE_RELEASE_ID=rel_01J8ZQ
-BEHINDGATE_URL=https://demo.behindgate.com/my-app/
+Deployed release rel_01J8ZQ to https://demo.behindgate.com/my-app/
 ```
 
-Bitbucket steps do not share an environment, so a file is the handoff. Declare
-it as an artifact to read it in a later step:
-
-```yaml
-- step:
-    name: Deploy
-    script:
-      - pipe: docker://behindgate/deploy-pipe:1
-        variables:
-          DEPLOY_PATH: dist
-          BEHINDGATE_TOKEN: $BEHINDGATE_TOKEN
-    artifacts:
-      - behindgate.env
-
-- step:
-    name: Smoke test
-    script:
-      - source behindgate.env
-      - curl -fsS "$BEHINDGATE_URL" > /dev/null
-```
-
-Both keys are always written, so a consumer can tell "deployed, address unknown"
-from "never ran".
+If you need them in a later step, read them from the CLI yourself in a `script:`
+line — the pipe will not leave a file behind for you.
 
 ## Why you should pin `DEPLOY_URL`
 

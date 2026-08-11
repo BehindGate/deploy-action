@@ -27,12 +27,6 @@ RUN node script/fetch-cli.js --platform "linux-${TARGETARCH}"
 
 FROM node:24-alpine
 
-# Runs as root, deliberately. Bitbucket bind-mounts the build directory into the
-# pipe container with the ownership the build container created -- root -- and
-# this pipe writes behindgate.env back into it. A non-root USER would fail that
-# write on every real runner, so the container stays root and stays disposable:
-# it holds no state, and the only code it runs is this entrypoint plus a CLI
-# verified against a checksum committed in this repository.
 COPY --from=cli /opt/bg-deploy /opt/bg-deploy
 
 WORKDIR /pipe
@@ -40,6 +34,12 @@ COPY versions.json ./
 COPY src/core ./src/core
 COPY src/bitbucket ./src/bitbucket
 COPY pipe.yml LICENSE ./
+
+# Unprivileged, which this pipe can afford because it never writes to the
+# checkout. It reads the directory it is told to deploy and unpacks the CLI into
+# a temporary directory of its own; nothing else touches the filesystem. `node`
+# is provided by the base image (uid 1000).
+USER node
 
 # No WORKDIR games at run time: the entrypoint chdirs to BITBUCKET_CLONE_DIR, so
 # a relative DEPLOY_PATH resolves against the checkout rather than against this.
