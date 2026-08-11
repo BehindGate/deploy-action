@@ -77,7 +77,10 @@ function validated(args) {
     );
   }
 
-  return { version, baseUrl: baseUrl.href.replace(/\/+$/, '') };
+  // Returned as-is: downloadUrl() strips trailing slashes itself, so doing it
+  // here was both duplicated and a `+$` regex, which backtracks quadratically
+  // on a long run of slashes.
+  return { version, baseUrl: baseUrl.href };
 }
 
 async function main() {
