@@ -57,46 +57,51 @@ async function acquireRealCli() {
   fs.mkdirSync(TMP_DIR, { recursive: true });
 
   // `node --test` runs test FILES in parallel, so several processes reach this
-  // at once on a cold cache. Everything below is therefore staged under a
-  // pid-suffixed name and published with a single rename: a partially written
-  // archive is never hashed, and a partially extracted binary is never exec'd
-  // (which surfaced as `spawn ETXTBSY`, not as anything resembling its cause).
-  const stage = (target) => `${target}.${process.pid}.part`;
-
-  // Version-scoped: archive names are identical across releases, so caching by
-  // bare name means a stale download from a previous version fails verification
-  // against the new pin -- which looks like a checksum failure, not a stale file.
-  const archivePath = path.join(TMP_DIR, `${version}-${artifact.archive}`);
-
-  if (!fs.existsSync(archivePath)) {
-    const url = versions.downloadUrl(baseUrl, version, artifact.archive);
-    let response;
-    try {
-      response = await fetch(url);
-    } catch (error) {
-      return { skip: `could not reach ${url}: ${error.message}` };
-    }
-    if (!response.ok) {
-      return { skip: `could not download ${url}: HTTP ${response.status}` };
-    }
-    const partial = stage(archivePath);
-    fs.writeFileSync(partial, Buffer.from(await response.arrayBuffer()));
-    fs.renameSync(partial, archivePath);
-  }
-
-  // Same verification the Action performs, against the same committed table.
-  await verifyFileChecksum(archivePath, artifact.sha256, { source: baseUrl });
-
-  const staging = stage(installDir);
-  fs.rmSync(staging, { recursive: true, force: true });
-  fs.mkdirSync(staging, { recursive: true });
-  execFileSync('tar', ['-xzf', archivePath, '-C', staging]);
-  fs.chmodSync(path.join(staging, artifact.binary), 0o755);
+  // at once on a cold cache. Everything below is therefore written inside a
+  // private staging directory and published with a single rename: a partially
+  // written archive is never hashed, and a partially extracted binary is never
+  // exec'd (which surfaced as `spawn ETXTBSY`, naming nothing resembling its
+  // cause). mkdtemp rather than a name built from the pid: it creates the
+  // directory exclusively, so the path cannot be pre-empted by a symlink.
+  const staging = fs.mkdtempSync(path.join(TMP_DIR, 'staging-'));
 
   try {
-    fs.renameSync(staging, installDir);
-  } catch {
-    // Another process published first. Its copy is the same verified bytes.
+    // Version-scoped: archive names are identical across releases, so caching by
+    // bare name means a stale download from a previous version fails
+    // verification against the new pin -- which looks like a checksum failure,
+    // not a stale file.
+    const archivePath = path.join(TMP_DIR, `${version}-${artifact.archive}`);
+
+    if (!fs.existsSync(archivePath)) {
+      const url = versions.downloadUrl(baseUrl, version, artifact.archive);
+      let response;
+      try {
+        response = await fetch(url);
+      } catch (error) {
+        return { skip: `could not reach ${url}: ${error.message}` };
+      }
+      if (!response.ok) {
+        return { skip: `could not download ${url}: HTTP ${response.status}` };
+      }
+      const partial = path.join(staging, artifact.archive);
+      fs.writeFileSync(partial, Buffer.from(await response.arrayBuffer()));
+      fs.renameSync(partial, archivePath);
+    }
+
+    // Same verification the Action performs, against the same committed table.
+    await verifyFileChecksum(archivePath, artifact.sha256, { source: baseUrl });
+
+    const extracted = path.join(staging, 'cli');
+    fs.mkdirSync(extracted);
+    execFileSync('tar', ['-xzf', archivePath, '-C', extracted]);
+    fs.chmodSync(path.join(extracted, artifact.binary), 0o755);
+
+    try {
+      fs.renameSync(extracted, installDir);
+    } catch {
+      // Another process published first. Its copy is the same verified bytes.
+    }
+  } finally {
     fs.rmSync(staging, { recursive: true, force: true });
   }
 
