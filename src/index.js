@@ -259,7 +259,6 @@ async function run() {
   if (exitCode !== EXIT_SUCCESS) {
     const { title, detail } = describeExitCode(exitCode, {
       path: deployPath,
-      urlPinned: true,
       usesToken,
       cliMessage: parseErrorMessage({ stdout, stderr }),
     });
