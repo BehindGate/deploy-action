@@ -77,11 +77,10 @@ function describeExitCode(code, context = {}) {
         'That refusal is the desired behaviour: a token whose endpoint claim ' +
           'disagrees with the pinned endpoint is exactly what a swapped secret ' +
           'looks like. Check that:',
-        '  - the endpoint is the one your token names -- a production token ' +
-          'cannot deploy to test, so a token for the test environment needs ' +
-          '`env: test` (or a matching `url`), and',
-        '  - `url`, where you set it, names the endpoint shown when you deploy ' +
-          'without it.'
+        '  - the endpoint is the one your token was issued for -- a token minted ' +
+          'against one environment cannot deploy to another, and the endpoint ' +
+          'defaults to production, and',
+        '  - `url`, where you set it, names that endpoint exactly.'
       );
     } else {
       lines.push(

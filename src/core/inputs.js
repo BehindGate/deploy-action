@@ -91,8 +91,10 @@ function resolveInputs(raw = {}) {
   // a local or dev endpoint is reached through, and an explicit value must never
   // be quietly replaced by one derived from a shorthand.
   const deployUrl = url || environment.deployUrl;
-  // Short enough to drop into a log line or a summary cell as-is.
-  const endpointSource = url ? 'url' : `env: ${environment.name}`;
+  // Short enough to drop into a log line or a summary cell as-is. It names the
+  // `url` input but never `env`, which is undocumented on purpose -- see
+  // docs/MAINTAINERS.md.
+  const endpointSource = url ? 'the `url` input' : `the ${environment.name} default`;
 
   if (token && siteUrl) {
     throw new ConfigurationError(

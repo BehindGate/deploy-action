@@ -22,22 +22,15 @@ inputs:
 
   env:
     description: |
-      Which BehindGate environment to talk to: `prod` (default) or `test`.
+      Internal. Selects the BehindGate environment this Action talks to, which
+      sets both the deploy endpoint and the host the CLI is downloaded from.
 
-      One value resolves the two addresses that have to agree, and that callers
-      previously had to keep in sync by hand:
+      Deliberately absent from the README: the environments other than the
+      default are BehindGate's own, and nothing a user of this Action deploys to.
+      `url` and `download-base-url` are the documented way to reach any other
+      endpoint, and each wins over this input.
 
-        prod  deploy endpoint https://app.behindgate.com/api/deploy
-              CLI downloads   https://app.behindgate.com
-        test  deploy endpoint https://app.test.behindgate.net/api/deploy
-              CLI downloads   https://app.test.behindgate.net
-
-      `url` and `download-base-url` still work and each wins over this input, so
-      an existing workflow keeps its exact behaviour and a local or dev endpoint
-      is still reachable.
-
-      Any other value is an error. Treating `staging` or `production` as a
-      spelling of the default would deploy to an environment nobody named.
+      Values and rationale: docs/MAINTAINERS.md, "The undocumented `env` input".
     required: false
     default: 'prod'
 

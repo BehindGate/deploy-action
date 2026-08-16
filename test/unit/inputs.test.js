@@ -95,7 +95,7 @@ describe('env resolves both URLs', () => {
     const resolved = inputs();
     assert.equal(resolved.deployUrl, 'https://app.behindgate.com/api/deploy');
     assert.equal(resolved.downloadBaseUrl, 'https://app.behindgate.com');
-    assert.equal(resolved.endpointSource, 'env: prod');
+    assert.equal(resolved.endpointSource, 'the prod default');
   });
 
   test('an unknown env fails instead of falling through to the default', () => {
@@ -107,7 +107,7 @@ describe('url and download-base-url win over env', () => {
   test('an explicit url overrides the environment endpoint', () => {
     const resolved = inputs({ env: 'test', url: 'http://127.0.0.1:8080/api/deploy' });
     assert.equal(resolved.deployUrl, 'http://127.0.0.1:8080/api/deploy');
-    assert.equal(resolved.endpointSource, 'url');
+    assert.equal(resolved.endpointSource, 'the `url` input');
     assert.ok(resolved.args.includes('http://127.0.0.1:8080/api/deploy'));
     assert.ok(!resolved.args.includes('https://app.test.behindgate.net/api/deploy'));
   });

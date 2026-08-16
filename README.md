@@ -39,21 +39,18 @@ tokens**, and store it as a repository secret.
 `path` should point at your build output — the folder whose *contents* become
 the site, so that `index.html` sits at the top of it.
 
-That deploys to production. For the test environment, add `env: test`.
-
 ## Inputs
 
 | Input | Required | Default | Description |
 | --- | --- | --- | --- |
 | `path` | yes¹ | — | Folder to deploy, or an existing `.zip` to upload as-is. |
-| `env` | no | `prod` | Which BehindGate environment to talk to: `prod` or `test`. Sets the deploy endpoint *and* the CLI download host together — see [Choosing an environment](#choosing-an-environment). |
 | `token` | no² | — | BehindGate deploy token. Always pass from a secret. Without it the job authenticates as itself — see [Deploying without a token](#deploying-without-a-token). |
 | `site-url` | no | — | What to deploy to, as the URL it serves on: the host names the site, the path names the app. Only with the CI-job credential; cannot be combined with `token`. |
 | `create-app` | no | `false` | Create the app named by `site-url` if it does not exist yet. |
 | `delete-app` | no | `false` | Delete the app named by `site-url` and exit without deploying. |
-| `url` | no | from `env` | Pin the deploy endpoint to an exact URL, overriding `env`. For a local or dev endpoint. |
+| `url` | no | `https://app.behindgate.com/api/deploy` | Pin the deploy endpoint to an exact URL. For a local or dev endpoint — see [Why the endpoint is pinned](#why-the-endpoint-is-pinned). |
 | `cli-version` | no | `defaultVersion` from [`versions.json`](versions.json) | Escape hatch to hold a specific `bg-deploy` version after a bad release. Normally leave unset — see [Which CLI version you get](#which-cli-version-you-get). |
-| `download-base-url` | no | from `env` | Host to download the CLI from, overriding `env`. |
+| `download-base-url` | no | `https://app.behindgate.com` | Host to download the CLI from. |
 
 ¹ Except with `delete-app: true`, which uploads nothing.
 ² Required unless the job authenticates as itself; `create-app` and `delete-app`
@@ -65,53 +62,6 @@ work only in that mode.
 | --- | --- |
 | `release-id` | Identifier of the published release. Empty for `delete-app`. |
 | `url` | Public address of the deployed site, read from the CLI's `--json` output. Empty for `delete-app`. |
-
-## Choosing an environment
-
-BehindGate runs more than one environment, and two addresses have to agree for a
-deploy to work: the endpoint the build is uploaded to, and the host the CLI
-itself is downloaded from. They are different URLs, and until now you had to set
-both by hand and keep them in sync.
-
-`env` sets both:
-
-| `env` | Deploy endpoint | CLI downloads |
-| --- | --- | --- |
-| `prod` (default) | `https://app.behindgate.com/api/deploy` | `https://app.behindgate.com` |
-| `test` | `https://app.test.behindgate.net/api/deploy` | `https://app.test.behindgate.net` |
-
-```yaml
-- uses: behindgate/deploy-action@v1
-  with:
-    path: dist
-    env: test
-    token: ${{ secrets.BEHINDGATE_TEST_TOKEN }}
-```
-
-Any other value fails the step. `env: staging` is not quietly read as the
-default, because that would deploy to an environment nobody named.
-
-`url` and `download-base-url` still work and each **wins over `env`**, so a
-workflow written before `env` existed behaves exactly as it did, and a local or
-dev endpoint is still reachable:
-
-```yaml
-- uses: behindgate/deploy-action@v1
-  with:
-    path: dist
-    url: http://localhost:8787/api/deploy   # env is ignored for the endpoint
-    token: ${{ secrets.BEHINDGATE_TOKEN }}
-```
-
-They are independent: overriding the endpoint leaves the CLI downloads on the
-environment's host, since a local endpoint does not imply a local mirror of the
-CLI archives.
-
-**This pins your endpoint by default.** Setting neither `env` nor `url` used to
-mean "upload wherever the token says"; it now means production. If you deploy to
-the test environment with only a token, add `env: test` — otherwise the CLI
-refuses the deploy on the endpoint mismatch, which is the behaviour
-[the next section](#why-the-endpoint-is-pinned) exists for.
 
 ## Why the endpoint is pinned
 
@@ -132,19 +82,26 @@ overridden. A swapped secret now fails the job instead of quietly succeeding
 somewhere else. Both behaviours are covered in
 [`test/integration/deploy.test.js`](test/integration/deploy.test.js).
 
-This is why `env` defaults to `prod` rather than to "whatever the token says":
-the safe destination is the one written down in the workflow.
+This is why the endpoint defaults to `https://app.behindgate.com/api/deploy`
+rather than to "whatever the token says": the safe destination is the one that
+does not move when a secret does.
 
-Use `url` when you need an endpoint `env` does not name — a local or dev
-instance. Write it as a literal. You can reference a repository or organisation
-variable (`url: ${{ vars.BEHINDGATE_URL }}`), but be clear about the trade-off: a
-literal is protected by code review and branch protection, while a variable moves
-the value back into mutable repository settings, so whoever can change the secret
-can often change the variable too — and the pin stops being a pin.
+Set `url` when you need a different endpoint — a local or dev instance. Write it
+as a literal. You can reference a repository or organisation variable
+(`url: ${{ vars.BEHINDGATE_URL }}`), but be clear about the trade-off: a literal
+is protected by code review and branch protection, while a variable moves the
+value back into mutable repository settings, so whoever can change the secret can
+often change the variable too — and the pin stops being a pin.
 
 Never put the endpoint in a *secret*. It is not sensitive, and storing it beside
 the token means a single compromised store controls both the credential and the
 destination — which looks like pinning while providing none of its benefit.
+
+**Leaving `url` unset used to mean "upload wherever the token says".** It now
+means the production endpoint above, and the "endpoint not pinned" warning is
+gone with it. A token minted for anywhere else needs its endpoint written into
+the workflow, or the CLI refuses the deploy on the mismatch — which is the whole
+point of the paragraph above.
 
 ## Deploying without a token
 
@@ -155,9 +112,10 @@ fifteen minutes, so the repository stores no long-lived secret at all.
 That needs three things:
 
 - `permissions: id-token: write` on the job, which is what mints the OIDC token;
-- a CI trust for this repository in the workspace, under **Settings → CI trusts**;
-- an endpoint the Action can name, which `env` supplies by default — there is no
-  token to carry one.
+- a CI trust for this repository in the workspace, under **Settings → CI trusts**.
+
+The endpoint comes from the default, or from `url` where you set one; there is no
+token to carry one in this mode.
 
 It is also the **only** mode in which `create-app` and `delete-app` work, because
 a deploy token is pinned to one app that already exists: it can neither create
@@ -223,8 +181,8 @@ fail with an exit 2 naming the missing permission.
 
 **`site-url` is not the deploy endpoint.** They are different values and both
 appear in this example's job log: `site-url` is where the release is *served*,
-`url` / `env` is the API it is *uploaded to*. Setting one to the other's value
-does not work.
+the endpoint (`url`) is the API it is *uploaded to*. Setting one to the other's
+value does not work.
 
 Without `create-app`, deploying to a path that has no app is an error rather than
 a silent creation — a mistyped path cannot quietly become a new app nobody ever

@@ -150,6 +150,36 @@ same commit if the new version should become the default.
 Confirm the version string with `bg-deploy --version`, which prints e.g.
 `bg-deploy 2026.07.1 (git 79f1f9f)`.
 
+## The undocumented `env` input
+
+`env` selects the BehindGate environment and resolves the two addresses that have
+to agree — the deploy endpoint and the host the CLI is downloaded from:
+
+| `env` | Deploy endpoint | CLI downloads |
+| --- | --- | --- |
+| `prod` (default) | `https://app.behindgate.com/api/deploy` | `https://app.behindgate.com` |
+| `test` | `https://app.test.behindgate.net/api/deploy` | `https://app.test.behindgate.net` |
+
+Anything else fails the step rather than falling back to the default, which would
+deploy to an environment nobody named. `url` and `download-base-url` each win
+over it, independently: overriding the endpoint leaves downloads on the
+environment's host.
+
+**It is deliberately absent from the README**, because the test environment is
+BehindGate's own and not somewhere a user of this Action deploys. `url` and
+`download-base-url` are the documented way to reach any other endpoint, and they
+cover every case a user has. Keep it that way when editing the README: the table
+above, `action.yml`, and `src/core/environments.js` are where it is written down.
+
+Nothing user-facing names the input either. The endpoint is reported in the log
+and the job summary as "pinned via the `url` input" or "pinned via the prod
+default", and the exit-2 guidance in `src/core/errors.js` talks about the
+endpoint rather than about `env`. Check that when changing those messages.
+
+The input still has to be declared in `action.yml`: passing an undeclared input
+makes the runner log "Unexpected input(s)" on every run, which is worse than a
+terse description.
+
 ## The preview inputs run ahead of the pinned CLI
 
 `site-url`, `create-app` and `delete-app` map onto CLI flags added in

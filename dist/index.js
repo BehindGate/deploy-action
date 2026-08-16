@@ -28454,11 +28454,10 @@ function describeExitCode(code, context = {}) {
         'That refusal is the desired behaviour: a token whose endpoint claim ' +
           'disagrees with the pinned endpoint is exactly what a swapped secret ' +
           'looks like. Check that:',
-        '  - the endpoint is the one your token names -- a production token ' +
-          'cannot deploy to test, so a token for the test environment needs ' +
-          '`env: test` (or a matching `url`), and',
-        '  - `url`, where you set it, names the endpoint shown when you deploy ' +
-          'without it.'
+        '  - the endpoint is the one your token was issued for -- a token minted ' +
+          'against one environment cannot deploy to another, and the endpoint ' +
+          'defaults to production, and',
+        '  - `url`, where you set it, names that endpoint exactly.'
       );
     } else {
       lines.push(
@@ -28613,8 +28612,10 @@ function resolveInputs(raw = {}) {
   // a local or dev endpoint is reached through, and an explicit value must never
   // be quietly replaced by one derived from a shorthand.
   const deployUrl = url || environment.deployUrl;
-  // Short enough to drop into a log line or a summary cell as-is.
-  const endpointSource = url ? 'url' : `env: ${environment.name}`;
+  // Short enough to drop into a log line or a summary cell as-is. It names the
+  // `url` input but never `env`, which is undocumented on purpose -- see
+  // docs/MAINTAINERS.md.
+  const endpointSource = url ? 'the `url` input' : `the ${environment.name} default`;
 
   if (token && siteUrl) {
     throw new ConfigurationError(
@@ -29259,7 +29260,7 @@ async function writeSummary({
     rows.push([{ data: 'CLI', header: true }, { data: `bg-deploy ${version}` }]);
     rows.push([
       { data: 'Endpoint', header: true },
-      { data: `${endpoint || 'unknown'} (pinned via <code>${endpointSource}</code>)` },
+      { data: `${endpoint || 'unknown'} (pinned via ${endpointSource})` },
     ]);
 
     summary.addTable(rows);

@@ -29,7 +29,7 @@ describe('describeExitCode', () => {
     const { detail } = describeExitCode(EXIT_CONFIG, { urlPinned: true });
     assert.match(detail, /pinned endpoint does not match/);
     assert.match(detail, /swapped secret/);
-    assert.match(detail, /`env: test`/);
+    assert.match(detail, /one environment cannot deploy to another/);
   });
 
   test('exit 2 without a pinned endpoint points at the secret instead', () => {

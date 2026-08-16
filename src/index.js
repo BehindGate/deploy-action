@@ -159,7 +159,7 @@ async function writeSummary({
     rows.push([{ data: 'CLI', header: true }, { data: `bg-deploy ${version}` }]);
     rows.push([
       { data: 'Endpoint', header: true },
-      { data: `${endpoint || 'unknown'} (pinned via <code>${endpointSource}</code>)` },
+      { data: `${endpoint || 'unknown'} (pinned via ${endpointSource})` },
     ]);
 
     summary.addTable(rows);
