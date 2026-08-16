@@ -28280,6 +28280,97 @@ module.exports = {
 
 /***/ }),
 
+/***/ 7295:
+/***/ ((module) => {
+
+"use strict";
+
+
+/**
+ * The BehindGate environments this Action knows how to talk to.
+ *
+ * Pure, dependency-free: no `@actions/*` imports.
+ *
+ * Two addresses have to agree for a deploy to work, and until now the caller
+ * had to keep them in sync by hand: the deploy endpoint the CLI uploads to, and
+ * the host the CLI itself is downloaded from. They are not the same URL and one
+ * is not derivable from the other by string surgery, so both are spelled out.
+ *
+ * The deploy endpoint carries the `/api/deploy` path. The bare host is served by
+ * a CDN that answers a POST with 403 text/html, and the CLI sends the request to
+ * `--url` exactly as given rather than appending a path, so a host on its own is
+ * not a usable endpoint.
+ *
+ * Downloads, by contrast, hang off the bare host: `<host>/downloads/<version>/`.
+ */
+
+class UnknownEnvironmentError extends Error {
+  constructor(value, known) {
+    super(
+      `Unknown \`env\` input "${value}". ` +
+        `Valid values: ${known.join(', ')}. ` +
+        `The environment selects both the deploy endpoint and the host the CLI ` +
+        `is downloaded from, so an unrecognised value is refused rather than ` +
+        `falling back to a default and deploying somewhere you did not ask for.`
+    );
+    this.name = 'UnknownEnvironmentError';
+    this.value = value;
+  }
+}
+
+const ENVIRONMENTS = Object.freeze({
+  prod: Object.freeze({
+    name: 'prod',
+    deployUrl: 'https://app.behindgate.com/api/deploy',
+    downloadBaseUrl: 'https://app.behindgate.com',
+  }),
+  test: Object.freeze({
+    name: 'test',
+    deployUrl: 'https://app.test.behindgate.net/api/deploy',
+    downloadBaseUrl: 'https://app.test.behindgate.net',
+  }),
+});
+
+const DEFAULT_ENVIRONMENT = 'prod';
+
+/** The environment names accepted by the `env` input. */
+function knownEnvironments() {
+  return Object.keys(ENVIRONMENTS);
+}
+
+/**
+ * Resolve the `env` input to its two URLs.
+ *
+ * An empty value is the unset input and resolves to the default. Anything else
+ * unrecognised throws: silently treating `env: staging` or `env: production` as
+ * production would send a build to an environment the caller did not name.
+ *
+ * @param {string} [value]
+ * @returns {{name: string, deployUrl: string, downloadBaseUrl: string}}
+ */
+function resolveEnvironment(value) {
+  const requested = String(value ?? '').trim();
+  if (!requested) return ENVIRONMENTS[DEFAULT_ENVIRONMENT];
+
+  const environment = ENVIRONMENTS[requested.toLowerCase()];
+  if (!environment) {
+    throw new UnknownEnvironmentError(requested, knownEnvironments());
+  }
+
+  return environment;
+}
+
+module.exports = {
+  ENVIRONMENTS,
+  DEFAULT_ENVIRONMENT,
+  knownEnvironments,
+  resolveEnvironment,
+  UnknownEnvironmentError,
+};
+
+
+/***/ }),
+
 /***/ 6938:
 /***/ ((module) => {
 
@@ -28317,11 +28408,11 @@ const EXIT_USAGE = EXIT_CONFIG;
  * Turn an exit code into an actionable failure message.
  *
  * @param {number} code
- * @param {{path?: string, urlPinned?: boolean, cliMessage?: string|null}} [context]
+ * @param {{path?: string, urlPinned?: boolean, usesToken?: boolean, cliMessage?: string|null}} [context]
  * @returns {{title: string, detail: string}}
  */
 function describeExitCode(code, context = {}) {
-  const { path, urlPinned = false, cliMessage = null } = context;
+  const { path, urlPinned = false, usesToken = true, cliMessage = null } = context;
   const reported = cliMessage ? `\nbg-deploy reported: ${cliMessage}\n` : '';
 
   if (code === EXIT_SUCCESS) {
@@ -28331,24 +28422,43 @@ function describeExitCode(code, context = {}) {
   if (code === EXIT_CONFIG) {
     const lines = ['bg-deploy rejected the request as misconfigured (exit 2).', reported];
 
+    // Without a token the job authenticated as itself, so none of the
+    // secret-shaped causes apply and the endpoint check is not the likely one
+    // either: the trust decides what this repository may do.
+    if (!usesToken) {
+      lines.push(
+        'This job authenticated as itself rather than with a deploy token, so ' +
+          'check that:',
+        '  - the job grants `permissions: id-token: write` (without it there is ' +
+          'no OIDC token to exchange),',
+        '  - the workspace has a CI trust for this repository ' +
+          '(Settings -> CI trusts),',
+        '  - that trust holds the permission the run needs -- "create apps" for ' +
+          '`create-app`, "delete apps" for `delete-app`, and it must cover the ' +
+          'site named by `site-url`, and',
+        '  - `site-url` names a real site, with the path naming the app.'
+      );
+    }
     // This Action validates the token's shape and the path before invoking the
     // CLI, so the causes it could have caught are already ruled out. What is
     // left is overwhelmingly the endpoint check -- and that one is security
     // relevant, so it leads.
-    if (urlPinned) {
+    else if (urlPinned) {
       lines.push(
         'Because this Action already checks the token format and the path ' +
-          'before running, the most likely cause is that the `url` input does ' +
-          'not match the endpoint your token was minted for. Since 2026.8.x the ' +
-          'CLI refuses to deploy on that mismatch rather than silently ' +
+          'before running, the most likely cause is that the pinned endpoint ' +
+          'does not match the endpoint your token was minted for. Since 2026.8.x ' +
+          'the CLI refuses to deploy on that mismatch rather than silently ' +
           'preferring one of them.',
         '',
         'That refusal is the desired behaviour: a token whose endpoint claim ' +
-          'disagrees with your pinned `url` is exactly what a swapped secret ' +
+          'disagrees with the pinned endpoint is exactly what a swapped secret ' +
           'looks like. Check that:',
-        '  - `url` names the endpoint shown when you deploy without it, and',
-        '  - the token really was issued for that environment ' +
-          '(a test-environment token cannot deploy to production).'
+        '  - the endpoint is the one your token names -- a production token ' +
+          'cannot deploy to test, so a token for the test environment needs ' +
+          '`env: test` (or a matching `url`), and',
+        '  - `url`, where you set it, names the endpoint shown when you deploy ' +
+          'without it.'
       );
     } else {
       lines.push(
@@ -28401,6 +28511,226 @@ module.exports = {
   EXIT_CONFIG,
   EXIT_USAGE,
   describeExitCode,
+};
+
+
+/***/ }),
+
+/***/ 2240:
+/***/ ((module, __unused_webpack_exports, __nccwpck_require__) => {
+
+"use strict";
+
+
+/**
+ * Turn the Action's raw string inputs into a CLI invocation.
+ *
+ * Pure, dependency-free: no `@actions/*` imports and no filesystem access, so
+ * the planned Bitbucket Pipe and GitLab component can reuse the same rules and
+ * the whole input contract is unit-testable without a runner.
+ *
+ * Everything here is about catching a misconfiguration before the CLI is even
+ * downloaded. The CLI rejects these combinations too, but it does so as a bare
+ * `exit 2` whose message has to be read out of a log; naming the *inputs* that
+ * conflict is the part only this layer can do.
+ */
+
+const { resolveEnvironment } = __nccwpck_require__(7295);
+
+/** A configuration error the caller can fix by editing their workflow. */
+class ConfigurationError extends Error {
+  constructor(message) {
+    super(message);
+    this.name = 'ConfigurationError';
+  }
+}
+
+function trim(value) {
+  return String(value ?? '').trim();
+}
+
+/**
+ * Parse a boolean input.
+ *
+ * Deliberately strict. `create-app: yes` and `delete-app: 1` are the kind of
+ * thing that looks like it works, and a `delete-app` silently read as false
+ * leaves preview apps behind forever while the job goes green.
+ */
+function parseBoolean(name, value, fallback = false) {
+  const raw = trim(value);
+  if (!raw) return fallback;
+
+  const normalized = raw.toLowerCase();
+  if (normalized === 'true') return true;
+  if (normalized === 'false') return false;
+
+  throw new ConfigurationError(
+    `The \`${name}\` input must be \`true\` or \`false\`, not "${raw}".`
+  );
+}
+
+/**
+ * A BehindGate deploy token is a JWT. Checking the shape here separates a
+ * malformed secret from a genuine deploy failure -- the CLI reports both as
+ * exit 2 with a message that has to be read out of the log. The token value
+ * itself never appears in the message.
+ */
+function looksLikeJwt(token) {
+  const segments = token.split('.');
+  return (
+    segments.length === 3 &&
+    segments[0].length > 0 &&
+    segments[1].length > 0 &&
+    segments.every((segment) => /^[A-Za-z0-9_-]*$/.test(segment))
+  );
+}
+
+/**
+ * Resolve the inputs into everything needed to run the CLI.
+ *
+ * @param {{env?: string, url?: string, downloadBaseUrl?: string, token?: string,
+ *          path?: string, siteUrl?: string, createApp?: string|boolean,
+ *          deleteApp?: string|boolean}} raw
+ * @returns {{environment: object, deployUrl: string, endpointSource: string,
+ *           downloadBaseUrl: string, token: string, usesToken: boolean,
+ *           siteUrl: string, createApp: boolean, deleteApp: boolean,
+ *           deployPath: string, args: string[], warnings: string[]}}
+ */
+function resolveInputs(raw = {}) {
+  const environment = resolveEnvironment(raw.env);
+
+  const url = trim(raw.url);
+  const downloadBaseUrl = trim(raw.downloadBaseUrl);
+  const token = trim(raw.token);
+  const siteUrl = trim(raw.siteUrl);
+  const deployPath = trim(raw.path);
+  const createApp = parseBoolean('create-app', raw.createApp);
+  const deleteApp = parseBoolean('delete-app', raw.deleteApp);
+
+  const warnings = [];
+
+  // `url` and `download-base-url` win over `env`. They predate it, they are what
+  // a local or dev endpoint is reached through, and an explicit value must never
+  // be quietly replaced by one derived from a shorthand.
+  const deployUrl = url || environment.deployUrl;
+  // Short enough to drop into a log line or a summary cell as-is.
+  const endpointSource = url ? 'url' : `env: ${environment.name}`;
+
+  if (token && siteUrl) {
+    throw new ConfigurationError(
+      [
+        'Pass either `token` or `site-url`, not both.',
+        '',
+        'A deploy token already names the site and the app it deploys to, so ' +
+          'there is nothing left for `site-url` to select. The two describe the ' +
+          'same thing and would have to agree; rather than guess which one you ' +
+          'meant, this fails now instead of deploying to whichever the CLI ' +
+          'happens to prefer.',
+        '',
+        'Deploying to a fixed app: keep `token` and drop `site-url`. Naming the ' +
+          'target per run (which is what a per-pull-request preview needs): drop ' +
+          '`token`, grant `permissions: id-token: write`, and let the job ' +
+          'authenticate as itself.',
+      ].join('\n')
+    );
+  }
+
+  if (token && (createApp || deleteApp)) {
+    const flag = createApp ? 'create-app' : 'delete-app';
+    throw new ConfigurationError(
+      [
+        `\`${flag}\` cannot be used with \`token\`.`,
+        '',
+        'A deploy token is pinned to one app that already exists, so it can ' +
+          'neither create another nor delete the one it names. Both need the job ' +
+          'to authenticate as itself against a CI trust that holds those ' +
+          'permissions.',
+        '',
+        'Remove `token:`, grant `permissions: id-token: write` to the job, and ' +
+          'give the workspace a CI trust for this repository ' +
+          '(Settings -> CI trusts).',
+      ].join('\n')
+    );
+  }
+
+  if (createApp && deleteApp) {
+    throw new ConfigurationError(
+      'Set either `create-app` or `delete-app`, not both. `delete-app` tears ' +
+        'the app down and exits without deploying, so combining them cannot ' +
+        'express anything.'
+    );
+  }
+
+  if ((createApp || deleteApp) && !siteUrl) {
+    const flag = createApp ? 'create-app' : 'delete-app';
+    throw new ConfigurationError(
+      `\`${flag}\` needs \`site-url\`, which is what names the app to ` +
+        `${createApp ? 'create' : 'delete'}: the host names the site and the ` +
+        `path names the app. Without it there is no target, and for ` +
+        `\`delete-app\` in particular the Action will not guess at one.`
+    );
+  }
+
+  if (token && !looksLikeJwt(token)) {
+    throw new ConfigurationError(
+      [
+        'The `token` input is not a well-formed JWT.',
+        '',
+        'A BehindGate deploy token has three base64url segments separated by ' +
+          'dots (header.payload.signature). The value supplied does not, which ' +
+          'usually means it was truncated, wrapped across lines, or quoted when ' +
+          'it was stored as a secret.',
+        '',
+        'Re-copy the token from the workspace dashboard under ' +
+          'Settings -> Deploy tokens.',
+      ].join('\n')
+    );
+  }
+
+  if (!deleteApp && !deployPath) {
+    throw new ConfigurationError(
+      'The `path` input is required: it names the folder to deploy, or an ' +
+        'existing .zip to upload as-is. Only `delete-app: true` can go without ' +
+        'one, since a teardown uploads nothing.'
+    );
+  }
+
+  if (deleteApp && deployPath) {
+    warnings.push(
+      'Both `delete-app` and `path` are set. A teardown uploads nothing, so ' +
+        '`path` is ignored.'
+    );
+  }
+
+  const args = ['-y', '--json', '--url', deployUrl];
+
+  if (siteUrl) args.push('--site-url', siteUrl);
+  if (createApp) args.push('--create-app');
+  if (deleteApp) args.push('--delete-app');
+  // The CLI takes the path last, and takes none at all for a teardown.
+  if (!deleteApp) args.push(deployPath);
+
+  return {
+    environment,
+    deployUrl,
+    endpointSource,
+    downloadBaseUrl: downloadBaseUrl || environment.downloadBaseUrl,
+    token,
+    usesToken: Boolean(token),
+    siteUrl,
+    createApp,
+    deleteApp,
+    deployPath: deleteApp ? '' : deployPath,
+    args,
+    warnings,
+  };
+}
+
+module.exports = {
+  ConfigurationError,
+  parseBoolean,
+  looksLikeJwt,
+  resolveInputs,
 };
 
 
@@ -28474,7 +28804,12 @@ function extractJson(stdout) {
  * than publish empty outputs as if they were real. Absent individual fields
  * come back as null rather than undefined, so the shape is stable.
  *
- * @returns {{releaseId: string|null, url: string|null, endpoint: string|null, status: string|null, version: string|null}|null}
+ * A teardown (`--delete-app`) reports a different object -- no release and no
+ * deployed address, but a `path` and a `deleted` flag. `deleted` is false when
+ * there was no app at that path, which is a success: a teardown job has to be
+ * safe to re-run.
+ *
+ * @returns {{releaseId: string|null, url: string|null, endpoint: string|null, status: string|null, version: string|null, path: string|null, deleted: boolean|null}|null}
  */
 function parseDeployJson(stdout) {
   const parsed = extractJson(stdout);
@@ -28488,6 +28823,8 @@ function parseDeployJson(stdout) {
     endpoint: str(parsed.endpoint),
     status: str(parsed.status),
     version: str(parsed.version),
+    path: str(parsed.path),
+    deleted: typeof parsed.deleted === 'boolean' ? parsed.deleted : null,
   };
 }
 
@@ -28785,6 +29122,7 @@ const versions = __nccwpck_require__(2200);
 const { verifyFileChecksum } = __nccwpck_require__(8226);
 const { parseDeployJson, parseErrorMessage } = __nccwpck_require__(4234);
 const { describeExitCode, EXIT_SUCCESS } = __nccwpck_require__(6938);
+const { resolveInputs, ConfigurationError } = __nccwpck_require__(2240);
 
 const TOOL_NAME = 'bg-deploy';
 
@@ -28840,58 +29178,33 @@ async function acquireCli({ version, platform, baseUrl }) {
 }
 
 /**
- * Fail early on an empty token with a message that names the real cause.
+ * Fail early when the job cannot mint an OIDC token.
  *
- * An unset secret interpolates to an empty string rather than failing the
- * workflow, so this is by far the most common way the step goes wrong.
+ * Without `token` the CLI authenticates as the job itself, which needs the
+ * Actions token service -- and that is only reachable when the workflow grants
+ * `id-token: write`. The CLI's own failure names the missing permission, but it
+ * cannot know that the *other* likely cause is a `token:` whose secret was never
+ * set: an unset secret interpolates to an empty string rather than failing the
+ * workflow, and an empty token now selects this mode instead of failing.
  */
-function validateToken(rawToken) {
-  const token = rawToken.trim();
+function requireOidcAvailable() {
+  if (process.env.ACTIONS_ID_TOKEN_REQUEST_URL) return;
 
-  if (!token) {
-    throw new Error(
-      [
-        'The `token` input is empty.',
-        '',
-        'A secret that is not set interpolates to an empty string rather than ' +
-          'failing the workflow, so this usually means the secret is missing ' +
-          'or the workflow is running from a fork (where secrets are ' +
-          'unavailable by design).',
-        '',
-        'Set a deploy token under Settings -> Secrets and variables -> Actions, ' +
-          'then reference it as `token: ${{ secrets.BEHINDGATE_TOKEN }}`.',
-      ].join('\n')
-    );
-  }
-
-  // bg-deploy exits 1 with "error: not a JWT" for this, which is the same exit
-  // code as a network failure or a rejected release. Checking here separates a
-  // malformed secret from a genuine deploy failure. The token itself is never
-  // included in the message.
-  const segments = token.split('.');
-  const looksLikeJwt =
-    segments.length === 3 &&
-    segments[0].length > 0 &&
-    segments[1].length > 0 &&
-    segments.every((segment) => /^[A-Za-z0-9_-]*$/.test(segment));
-
-  if (!looksLikeJwt) {
-    throw new Error(
-      [
-        'The `token` input is not a well-formed JWT.',
-        '',
-        'A BehindGate deploy token has three base64url segments separated by ' +
-          'dots (header.payload.signature). The value supplied does not, which ' +
-          'usually means it was truncated, wrapped across lines, or quoted when ' +
-          'it was stored as a secret.',
-        '',
-        'Re-copy the token from the workspace dashboard under ' +
-          'Settings -> Deploy tokens.',
-      ].join('\n')
-    );
-  }
-
-  return token;
+  throw new ConfigurationError(
+    [
+      'No `token` was supplied, so this job has to authenticate as itself -- ' +
+        'but no OIDC token is available to it.',
+      '',
+      'Either the job is missing the permission that mints one:',
+      '',
+      '    permissions:',
+      '      id-token: write',
+      '',
+      'or you meant to pass a deploy token and the secret behind `token:` is ' +
+        'not set. An unset secret interpolates to an empty string rather than ' +
+        'failing the workflow, and a fork gets no secrets at all by design.',
+    ].join('\n')
+  );
 }
 
 /** Fail early on a bad path; the CLI validates the token first and would mask this. */
@@ -28906,43 +29219,55 @@ function validatePath(inputPath) {
   return inputPath;
 }
 
-async function writeSummary({ releaseId, url, endpoint, deployPath, version, pinned }) {
+async function writeSummary({
+  releaseId,
+  url,
+  endpoint,
+  endpointSource,
+  deployPath,
+  siteUrl,
+  version,
+  deleteApp,
+  deleted,
+}) {
   try {
-    const summary = core.summary.addHeading('BehindGate deploy', 3);
+    const summary = core.summary.addHeading(
+      deleteApp ? 'BehindGate teardown' : 'BehindGate deploy',
+      3
+    );
 
-    if (url) {
+    if (deleteApp) {
+      summary.addRaw(
+        deleted
+          ? `Deleted the app at <code>${siteUrl}</code>.`
+          : `No app at <code>${siteUrl}</code>; nothing to delete.`,
+        true
+      );
+    } else if (url) {
       summary.addRaw(`Deployed <a href="${url}">${url}</a>`, true);
     }
 
-    const rows = [
-      [{ data: 'Release', header: true }, { data: releaseId || 'unknown' }],
-      [{ data: 'Source', header: true }, { data: deployPath }],
-      [{ data: 'CLI', header: true }, { data: `bg-deploy ${version}` }],
-      [
-        { data: 'Endpoint', header: true },
-        {
-          data: `${endpoint || 'unknown'}${
-            pinned ? ' (pinned via <code>url</code>)' : ' (from token claim)'
-          }`,
-        },
-      ],
-    ];
+    const rows = [];
+
+    if (!deleteApp) {
+      rows.push([{ data: 'Release', header: true }, { data: releaseId || 'unknown' }]);
+      rows.push([{ data: 'Source', header: true }, { data: deployPath }]);
+    }
+    if (siteUrl) {
+      rows.push([{ data: 'Target', header: true }, { data: siteUrl }]);
+    }
+    rows.push([{ data: 'CLI', header: true }, { data: `bg-deploy ${version}` }]);
+    rows.push([
+      { data: 'Endpoint', header: true },
+      { data: `${endpoint || 'unknown'} (pinned via <code>${endpointSource}</code>)` },
+    ]);
+
     summary.addTable(rows);
 
-    if (!url) {
+    if (!deleteApp && !url) {
       summary.addRaw(
         'No deployed address was reported by the CLI, so there is nothing to ' +
           'link. The deploy itself succeeded.',
-        true
-      );
-    }
-
-    if (!pinned) {
-      summary.addRaw(
-        '<strong>Endpoint not pinned.</strong> The upload target came from the ' +
-          "token's own claim. Set the <code>url</code> input to pin it: the CLI " +
-          'then refuses to deploy when a token claims a different endpoint, ' +
-          'instead of quietly sending the build wherever the token says.',
         true
       );
     }
@@ -28965,29 +29290,34 @@ async function run() {
     if (trimmed && trimmed !== rawToken) core.setSecret(trimmed);
   }
 
-  const token = validateToken(rawToken);
-  const deployPath = validatePath(core.getInput('path', { required: true }));
-  const url = core.getInput('url').trim();
+  const inputs = resolveInputs({
+    env: core.getInput('env'),
+    url: core.getInput('url'),
+    downloadBaseUrl: core.getInput('download-base-url'),
+    token: rawToken,
+    path: core.getInput('path'),
+    siteUrl: core.getInput('site-url'),
+    createApp: core.getInput('create-app'),
+    deleteApp: core.getInput('delete-app'),
+  });
+
+  const { args, deployPath, deployUrl, endpointSource, siteUrl, usesToken } = inputs;
+
+  for (const warning of inputs.warnings) core.warning(warning);
+
+  if (deployPath) validatePath(deployPath);
+  if (!usesToken) requireOidcAvailable();
+
   const version = core.getInput('cli-version').trim() || versions.defaultVersion();
-  const baseUrl =
-    core.getInput('download-base-url').trim() || versions.defaultDownloadBaseUrl();
 
   const platform = resolvePlatform();
-  const binary = await acquireCli({ version, platform, baseUrl });
+  const binary = await acquireCli({ version, platform, baseUrl: inputs.downloadBaseUrl });
 
-  const args = ['-y', '--json'];
-  if (url) {
-    args.push('--url', url);
-  } else {
-    core.warning(
-      'No `url` input set, so the deploy endpoint comes from the token itself. ' +
-        'A token is both a credential and a routing instruction: anyone who can ' +
-        'change the secret can redirect this upload while the job still reports ' +
-        'success. Pin the endpoint with `url:` and the CLI will refuse to deploy ' +
-        'if a token turns up claiming a different one.'
-    );
-  }
-  args.push(deployPath);
+  core.info(
+    usesToken
+      ? `Deploying to ${deployUrl} (pinned via ${endpointSource}) with a deploy token`
+      : `Authenticating as this job against ${deployUrl} (pinned via ${endpointSource})`
+  );
 
   // stdout and stderr must stay separate: under --json, stdout carries exactly
   // one JSON object and every human-readable progress line goes to stderr.
@@ -28997,10 +29327,22 @@ async function run() {
 
   // The token goes in the environment, never on the command line, so it cannot
   // surface in a process listing or in the command echo of the step log.
+  //
+  // With no `token` input the variable is REMOVED rather than left to inherit:
+  // the CLI picks its credential mode from the environment, so a stray
+  // BEHINDGATE_TOKEN set elsewhere in the workflow would otherwise silently
+  // override what the inputs asked for.
+  const childEnv = { ...process.env };
+  if (inputs.token) {
+    childEnv.BEHINDGATE_TOKEN = inputs.token;
+  } else {
+    delete childEnv.BEHINDGATE_TOKEN;
+  }
+
   const exitCode = await exec.exec(binary, args, {
     ignoreReturnCode: true,
     silent: true,
-    env: { ...process.env, BEHINDGATE_TOKEN: token },
+    env: childEnv,
     listeners: {
       stdout: (data) => {
         stdout += data.toString();
@@ -29017,7 +29359,8 @@ async function run() {
   if (exitCode !== EXIT_SUCCESS) {
     const { title, detail } = describeExitCode(exitCode, {
       path: deployPath,
-      urlPinned: Boolean(url),
+      urlPinned: true,
+      usesToken,
       cliMessage: parseErrorMessage({ stdout, stderr }),
     });
     core.setFailed(`${title}\n\n${detail}`);
@@ -29037,22 +29380,35 @@ async function run() {
   const releaseId = parsed?.releaseId || '';
   const deployedUrl = parsed?.url || '';
 
+  // A teardown publishes no release and has no address, so both outputs are
+  // empty by definition rather than by failure.
   core.setOutput('release-id', releaseId);
   core.setOutput('url', deployedUrl);
 
-  core.info(
-    deployedUrl
-      ? `Deployed release ${releaseId || '(unknown)'} to ${deployedUrl}`
-      : `Deployed release ${releaseId || '(unknown)'}`
-  );
+  if (inputs.deleteApp) {
+    core.info(
+      parsed?.deleted
+        ? `Deleted the app at ${siteUrl}`
+        : `No app at ${siteUrl}; nothing to delete`
+    );
+  } else {
+    core.info(
+      deployedUrl
+        ? `Deployed release ${releaseId || '(unknown)'} to ${deployedUrl}`
+        : `Deployed release ${releaseId || '(unknown)'}`
+    );
+  }
 
   await writeSummary({
     releaseId,
     url: deployedUrl,
-    endpoint: parsed?.endpoint,
+    endpoint: parsed?.endpoint || deployUrl,
+    endpointSource,
     deployPath,
+    siteUrl,
     version: parsed?.version || version,
-    pinned: Boolean(url),
+    deleteApp: inputs.deleteApp,
+    deleted: parsed?.deleted,
   });
 }
 
@@ -29060,7 +29416,7 @@ run().catch((error) => {
   core.setFailed(error instanceof Error ? error.message : String(error));
 });
 
-module.exports = { run, acquireCli, validateToken, validatePath };
+module.exports = { run, acquireCli, requireOidcAvailable, validatePath };
 
 
 /***/ }),

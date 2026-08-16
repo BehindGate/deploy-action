@@ -22,6 +22,7 @@ const versions = require('./core/versions');
 const { verifyFileChecksum } = require('./core/checksum');
 const { parseDeployJson, parseErrorMessage } = require('./core/parse');
 const { describeExitCode, EXIT_SUCCESS } = require('./core/errors');
+const { resolveInputs, ConfigurationError } = require('./core/inputs');
 
 const TOOL_NAME = 'bg-deploy';
 
@@ -77,58 +78,33 @@ async function acquireCli({ version, platform, baseUrl }) {
 }
 
 /**
- * Fail early on an empty token with a message that names the real cause.
+ * Fail early when the job cannot mint an OIDC token.
  *
- * An unset secret interpolates to an empty string rather than failing the
- * workflow, so this is by far the most common way the step goes wrong.
+ * Without `token` the CLI authenticates as the job itself, which needs the
+ * Actions token service -- and that is only reachable when the workflow grants
+ * `id-token: write`. The CLI's own failure names the missing permission, but it
+ * cannot know that the *other* likely cause is a `token:` whose secret was never
+ * set: an unset secret interpolates to an empty string rather than failing the
+ * workflow, and an empty token now selects this mode instead of failing.
  */
-function validateToken(rawToken) {
-  const token = rawToken.trim();
+function requireOidcAvailable() {
+  if (process.env.ACTIONS_ID_TOKEN_REQUEST_URL) return;
 
-  if (!token) {
-    throw new Error(
-      [
-        'The `token` input is empty.',
-        '',
-        'A secret that is not set interpolates to an empty string rather than ' +
-          'failing the workflow, so this usually means the secret is missing ' +
-          'or the workflow is running from a fork (where secrets are ' +
-          'unavailable by design).',
-        '',
-        'Set a deploy token under Settings -> Secrets and variables -> Actions, ' +
-          'then reference it as `token: ${{ secrets.BEHINDGATE_TOKEN }}`.',
-      ].join('\n')
-    );
-  }
-
-  // bg-deploy exits 1 with "error: not a JWT" for this, which is the same exit
-  // code as a network failure or a rejected release. Checking here separates a
-  // malformed secret from a genuine deploy failure. The token itself is never
-  // included in the message.
-  const segments = token.split('.');
-  const looksLikeJwt =
-    segments.length === 3 &&
-    segments[0].length > 0 &&
-    segments[1].length > 0 &&
-    segments.every((segment) => /^[A-Za-z0-9_-]*$/.test(segment));
-
-  if (!looksLikeJwt) {
-    throw new Error(
-      [
-        'The `token` input is not a well-formed JWT.',
-        '',
-        'A BehindGate deploy token has three base64url segments separated by ' +
-          'dots (header.payload.signature). The value supplied does not, which ' +
-          'usually means it was truncated, wrapped across lines, or quoted when ' +
-          'it was stored as a secret.',
-        '',
-        'Re-copy the token from the workspace dashboard under ' +
-          'Settings -> Deploy tokens.',
-      ].join('\n')
-    );
-  }
-
-  return token;
+  throw new ConfigurationError(
+    [
+      'No `token` was supplied, so this job has to authenticate as itself -- ' +
+        'but no OIDC token is available to it.',
+      '',
+      'Either the job is missing the permission that mints one:',
+      '',
+      '    permissions:',
+      '      id-token: write',
+      '',
+      'or you meant to pass a deploy token and the secret behind `token:` is ' +
+        'not set. An unset secret interpolates to an empty string rather than ' +
+        'failing the workflow, and a fork gets no secrets at all by design.',
+    ].join('\n')
+  );
 }
 
 /** Fail early on a bad path; the CLI validates the token first and would mask this. */
@@ -143,43 +119,55 @@ function validatePath(inputPath) {
   return inputPath;
 }
 
-async function writeSummary({ releaseId, url, endpoint, deployPath, version, pinned }) {
+async function writeSummary({
+  releaseId,
+  url,
+  endpoint,
+  endpointSource,
+  deployPath,
+  siteUrl,
+  version,
+  deleteApp,
+  deleted,
+}) {
   try {
-    const summary = core.summary.addHeading('BehindGate deploy', 3);
+    const summary = core.summary.addHeading(
+      deleteApp ? 'BehindGate teardown' : 'BehindGate deploy',
+      3
+    );
 
-    if (url) {
+    if (deleteApp) {
+      summary.addRaw(
+        deleted
+          ? `Deleted the app at <code>${siteUrl}</code>.`
+          : `No app at <code>${siteUrl}</code>; nothing to delete.`,
+        true
+      );
+    } else if (url) {
       summary.addRaw(`Deployed <a href="${url}">${url}</a>`, true);
     }
 
-    const rows = [
-      [{ data: 'Release', header: true }, { data: releaseId || 'unknown' }],
-      [{ data: 'Source', header: true }, { data: deployPath }],
-      [{ data: 'CLI', header: true }, { data: `bg-deploy ${version}` }],
-      [
-        { data: 'Endpoint', header: true },
-        {
-          data: `${endpoint || 'unknown'}${
-            pinned ? ' (pinned via <code>url</code>)' : ' (from token claim)'
-          }`,
-        },
-      ],
-    ];
+    const rows = [];
+
+    if (!deleteApp) {
+      rows.push([{ data: 'Release', header: true }, { data: releaseId || 'unknown' }]);
+      rows.push([{ data: 'Source', header: true }, { data: deployPath }]);
+    }
+    if (siteUrl) {
+      rows.push([{ data: 'Target', header: true }, { data: siteUrl }]);
+    }
+    rows.push([{ data: 'CLI', header: true }, { data: `bg-deploy ${version}` }]);
+    rows.push([
+      { data: 'Endpoint', header: true },
+      { data: `${endpoint || 'unknown'} (pinned via <code>${endpointSource}</code>)` },
+    ]);
+
     summary.addTable(rows);
 
-    if (!url) {
+    if (!deleteApp && !url) {
       summary.addRaw(
         'No deployed address was reported by the CLI, so there is nothing to ' +
           'link. The deploy itself succeeded.',
-        true
-      );
-    }
-
-    if (!pinned) {
-      summary.addRaw(
-        '<strong>Endpoint not pinned.</strong> The upload target came from the ' +
-          "token's own claim. Set the <code>url</code> input to pin it: the CLI " +
-          'then refuses to deploy when a token claims a different endpoint, ' +
-          'instead of quietly sending the build wherever the token says.',
         true
       );
     }
@@ -202,29 +190,34 @@ async function run() {
     if (trimmed && trimmed !== rawToken) core.setSecret(trimmed);
   }
 
-  const token = validateToken(rawToken);
-  const deployPath = validatePath(core.getInput('path', { required: true }));
-  const url = core.getInput('url').trim();
+  const inputs = resolveInputs({
+    env: core.getInput('env'),
+    url: core.getInput('url'),
+    downloadBaseUrl: core.getInput('download-base-url'),
+    token: rawToken,
+    path: core.getInput('path'),
+    siteUrl: core.getInput('site-url'),
+    createApp: core.getInput('create-app'),
+    deleteApp: core.getInput('delete-app'),
+  });
+
+  const { args, deployPath, deployUrl, endpointSource, siteUrl, usesToken } = inputs;
+
+  for (const warning of inputs.warnings) core.warning(warning);
+
+  if (deployPath) validatePath(deployPath);
+  if (!usesToken) requireOidcAvailable();
+
   const version = core.getInput('cli-version').trim() || versions.defaultVersion();
-  const baseUrl =
-    core.getInput('download-base-url').trim() || versions.defaultDownloadBaseUrl();
 
   const platform = resolvePlatform();
-  const binary = await acquireCli({ version, platform, baseUrl });
+  const binary = await acquireCli({ version, platform, baseUrl: inputs.downloadBaseUrl });
 
-  const args = ['-y', '--json'];
-  if (url) {
-    args.push('--url', url);
-  } else {
-    core.warning(
-      'No `url` input set, so the deploy endpoint comes from the token itself. ' +
-        'A token is both a credential and a routing instruction: anyone who can ' +
-        'change the secret can redirect this upload while the job still reports ' +
-        'success. Pin the endpoint with `url:` and the CLI will refuse to deploy ' +
-        'if a token turns up claiming a different one.'
-    );
-  }
-  args.push(deployPath);
+  core.info(
+    usesToken
+      ? `Deploying to ${deployUrl} (pinned via ${endpointSource}) with a deploy token`
+      : `Authenticating as this job against ${deployUrl} (pinned via ${endpointSource})`
+  );
 
   // stdout and stderr must stay separate: under --json, stdout carries exactly
   // one JSON object and every human-readable progress line goes to stderr.
@@ -234,10 +227,22 @@ async function run() {
 
   // The token goes in the environment, never on the command line, so it cannot
   // surface in a process listing or in the command echo of the step log.
+  //
+  // With no `token` input the variable is REMOVED rather than left to inherit:
+  // the CLI picks its credential mode from the environment, so a stray
+  // BEHINDGATE_TOKEN set elsewhere in the workflow would otherwise silently
+  // override what the inputs asked for.
+  const childEnv = { ...process.env };
+  if (inputs.token) {
+    childEnv.BEHINDGATE_TOKEN = inputs.token;
+  } else {
+    delete childEnv.BEHINDGATE_TOKEN;
+  }
+
   const exitCode = await exec.exec(binary, args, {
     ignoreReturnCode: true,
     silent: true,
-    env: { ...process.env, BEHINDGATE_TOKEN: token },
+    env: childEnv,
     listeners: {
       stdout: (data) => {
         stdout += data.toString();
@@ -254,7 +259,8 @@ async function run() {
   if (exitCode !== EXIT_SUCCESS) {
     const { title, detail } = describeExitCode(exitCode, {
       path: deployPath,
-      urlPinned: Boolean(url),
+      urlPinned: true,
+      usesToken,
       cliMessage: parseErrorMessage({ stdout, stderr }),
     });
     core.setFailed(`${title}\n\n${detail}`);
@@ -274,22 +280,35 @@ async function run() {
   const releaseId = parsed?.releaseId || '';
   const deployedUrl = parsed?.url || '';
 
+  // A teardown publishes no release and has no address, so both outputs are
+  // empty by definition rather than by failure.
   core.setOutput('release-id', releaseId);
   core.setOutput('url', deployedUrl);
 
-  core.info(
-    deployedUrl
-      ? `Deployed release ${releaseId || '(unknown)'} to ${deployedUrl}`
-      : `Deployed release ${releaseId || '(unknown)'}`
-  );
+  if (inputs.deleteApp) {
+    core.info(
+      parsed?.deleted
+        ? `Deleted the app at ${siteUrl}`
+        : `No app at ${siteUrl}; nothing to delete`
+    );
+  } else {
+    core.info(
+      deployedUrl
+        ? `Deployed release ${releaseId || '(unknown)'} to ${deployedUrl}`
+        : `Deployed release ${releaseId || '(unknown)'}`
+    );
+  }
 
   await writeSummary({
     releaseId,
     url: deployedUrl,
-    endpoint: parsed?.endpoint,
+    endpoint: parsed?.endpoint || deployUrl,
+    endpointSource,
     deployPath,
+    siteUrl,
     version: parsed?.version || version,
-    pinned: Boolean(url),
+    deleteApp: inputs.deleteApp,
+    deleted: parsed?.deleted,
   });
 }
 
@@ -297,4 +316,4 @@ run().catch((error) => {
   core.setFailed(error instanceof Error ? error.message : String(error));
 });
 
-module.exports = { run, acquireCli, validateToken, validatePath };
+module.exports = { run, acquireCli, requireOidcAvailable, validatePath };

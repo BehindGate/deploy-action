@@ -11,7 +11,7 @@
 const fs = require('node:fs');
 const os = require('node:os');
 const path = require('node:path');
-const { execFileSync } = require('node:child_process');
+const { execFileSync, spawnSync } = require('node:child_process');
 
 const versions = require('../../src/core/versions');
 const { verifyFileChecksum } = require('../../src/core/checksum');
@@ -25,6 +25,18 @@ const TMP_DIR = path.join(__dirname, '..', '.tmp');
 async function acquireRealCli() {
   if (process.platform === 'win32') {
     return { skip: 'integration tests use tar(1); not run on Windows' };
+  }
+
+  // Escape hatch for testing against a build that has no pin yet -- a release
+  // published to the test environment ahead of production has no checksum in
+  // versions.json, so it cannot be fetched through the path above:
+  //
+  //   BG_CLI_BINARY=/path/to/bg-deploy npm run test:integration
+  //
+  // Test-only. Nothing in src/ has an equivalent: the Action never runs an
+  // unverified binary.
+  if (process.env.BG_CLI_BINARY) {
+    return { binary: process.env.BG_CLI_BINARY };
   }
 
   let platform;
@@ -72,6 +84,35 @@ async function acquireRealCli() {
   return { binary };
 }
 
+/**
+ * Whether the acquired CLI understands the preview flags.
+ *
+ * `--site-url`, `--create-app` and `--delete-app` arrived in 2026.8.5. An older
+ * CLI rejects them as unknown flags (exit 2), so the preview tests skip rather
+ * than fail until the pinned default catches up. Read from `--help` rather than
+ * from the version string: the flags are the contract, the number is a label.
+ *
+ * @returns {string|null} a skip reason, or null when the flags are supported
+ */
+function previewSupport(binary) {
+  // Both streams: the CLI writes its usage to stderr, and only --json output is
+  // ever promised on stdout.
+  const help = spawnSync(binary, ['--help'], { encoding: 'utf8' });
+  const text = `${help.stdout || ''}${help.stderr || ''}`;
+
+  const missing = ['--site-url', '--create-app', '--delete-app'].filter(
+    (flag) => !text.includes(flag)
+  );
+  if (!missing.length) return null;
+
+  const version = spawnSync(binary, ['--version'], { encoding: 'utf8' });
+  return (
+    `${`${version.stdout || ''}${version.stderr || ''}`.trim()} has no ` +
+    `${missing.join(', ')}; the preview flow needs 2026.8.5. Run against a ` +
+    `pre-release build with BG_CLI_BINARY=/path/to/bg-deploy.`
+  );
+}
+
 /** A throwaway static site: index.html at the top, plus a nested asset. */
 function makeSiteFixture(name = 'site') {
   const root = fs.mkdtempSync(path.join(os.tmpdir(), 'bg-fixture-'));
@@ -82,4 +123,4 @@ function makeSiteFixture(name = 'site') {
   return { root, site };
 }
 
-module.exports = { acquireRealCli, makeSiteFixture, TMP_DIR };
+module.exports = { acquireRealCli, previewSupport, makeSiteFixture, TMP_DIR };

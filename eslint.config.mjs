@@ -8,6 +8,7 @@ const nodeGlobals = {
   console: 'readonly',
   Buffer: 'readonly',
   URL: 'readonly',
+  URLSearchParams: 'readonly',
   __dirname: 'readonly',
   __filename: 'readonly',
   setTimeout: 'readonly',

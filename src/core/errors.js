@@ -31,11 +31,11 @@ const EXIT_USAGE = EXIT_CONFIG;
  * Turn an exit code into an actionable failure message.
  *
  * @param {number} code
- * @param {{path?: string, urlPinned?: boolean, cliMessage?: string|null}} [context]
+ * @param {{path?: string, urlPinned?: boolean, usesToken?: boolean, cliMessage?: string|null}} [context]
  * @returns {{title: string, detail: string}}
  */
 function describeExitCode(code, context = {}) {
-  const { path, urlPinned = false, cliMessage = null } = context;
+  const { path, urlPinned = false, usesToken = true, cliMessage = null } = context;
   const reported = cliMessage ? `\nbg-deploy reported: ${cliMessage}\n` : '';
 
   if (code === EXIT_SUCCESS) {
@@ -45,24 +45,43 @@ function describeExitCode(code, context = {}) {
   if (code === EXIT_CONFIG) {
     const lines = ['bg-deploy rejected the request as misconfigured (exit 2).', reported];
 
+    // Without a token the job authenticated as itself, so none of the
+    // secret-shaped causes apply and the endpoint check is not the likely one
+    // either: the trust decides what this repository may do.
+    if (!usesToken) {
+      lines.push(
+        'This job authenticated as itself rather than with a deploy token, so ' +
+          'check that:',
+        '  - the job grants `permissions: id-token: write` (without it there is ' +
+          'no OIDC token to exchange),',
+        '  - the workspace has a CI trust for this repository ' +
+          '(Settings -> CI trusts),',
+        '  - that trust holds the permission the run needs -- "create apps" for ' +
+          '`create-app`, "delete apps" for `delete-app`, and it must cover the ' +
+          'site named by `site-url`, and',
+        '  - `site-url` names a real site, with the path naming the app.'
+      );
+    }
     // This Action validates the token's shape and the path before invoking the
     // CLI, so the causes it could have caught are already ruled out. What is
     // left is overwhelmingly the endpoint check -- and that one is security
     // relevant, so it leads.
-    if (urlPinned) {
+    else if (urlPinned) {
       lines.push(
         'Because this Action already checks the token format and the path ' +
-          'before running, the most likely cause is that the `url` input does ' +
-          'not match the endpoint your token was minted for. Since 2026.8.x the ' +
-          'CLI refuses to deploy on that mismatch rather than silently ' +
+          'before running, the most likely cause is that the pinned endpoint ' +
+          'does not match the endpoint your token was minted for. Since 2026.8.x ' +
+          'the CLI refuses to deploy on that mismatch rather than silently ' +
           'preferring one of them.',
         '',
         'That refusal is the desired behaviour: a token whose endpoint claim ' +
-          'disagrees with your pinned `url` is exactly what a swapped secret ' +
+          'disagrees with the pinned endpoint is exactly what a swapped secret ' +
           'looks like. Check that:',
-        '  - `url` names the endpoint shown when you deploy without it, and',
-        '  - the token really was issued for that environment ' +
-          '(a test-environment token cannot deploy to production).'
+        '  - the endpoint is the one your token names -- a production token ' +
+          'cannot deploy to test, so a token for the test environment needs ' +
+          '`env: test` (or a matching `url`), and',
+        '  - `url`, where you set it, names the endpoint shown when you deploy ' +
+          'without it.'
       );
     } else {
       lines.push(

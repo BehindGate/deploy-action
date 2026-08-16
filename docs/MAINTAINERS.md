@@ -150,6 +150,29 @@ same commit if the new version should become the default.
 Confirm the version string with `bg-deploy --version`, which prints e.g.
 `bg-deploy 2026.07.1 (git 79f1f9f)`.
 
+## The preview inputs run ahead of the pinned CLI
+
+`site-url`, `create-app` and `delete-app` map onto CLI flags added in
+**2026.8.5**, which at the time of writing is published on the test host only —
+production still serves 2026.8.4, and `/downloads/2026.8.5/` there answers 403.
+Nothing was pinned for it: adding a test-host-captured entry would put production
+users one `cli-version:` away from a 403, and `bump` never overwrites an existing
+entry, so a hand-added key would also stop the weekly job adopting the production
+build under the same name.
+
+So the inputs ship first and start working when
+[`cli-update.yml`](../.github/workflows/cli-update.yml) adopts 2026.8.5 from the
+production host. No change to this Action is needed then. Until it lands:
+
+- `test/integration/preview.test.js` skips itself, detecting the flags from
+  `--help` rather than from a version string;
+- `BG_CLI_BINARY=/path/to/bg-deploy npm run test:integration` runs it against a
+  build fetched by hand. That escape hatch is test-only — the Action itself never
+  runs an unverified binary.
+
+Drop the skip only when it stops firing on its own; a skipping preview suite is
+the signal that the pin has not caught up yet.
+
 ## Hosts are per-environment
 
 BehindGate serves downloads from a different host per environment — production

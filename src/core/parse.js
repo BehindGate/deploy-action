@@ -62,7 +62,12 @@ function extractJson(stdout) {
  * than publish empty outputs as if they were real. Absent individual fields
  * come back as null rather than undefined, so the shape is stable.
  *
- * @returns {{releaseId: string|null, url: string|null, endpoint: string|null, status: string|null, version: string|null}|null}
+ * A teardown (`--delete-app`) reports a different object -- no release and no
+ * deployed address, but a `path` and a `deleted` flag. `deleted` is false when
+ * there was no app at that path, which is a success: a teardown job has to be
+ * safe to re-run.
+ *
+ * @returns {{releaseId: string|null, url: string|null, endpoint: string|null, status: string|null, version: string|null, path: string|null, deleted: boolean|null}|null}
  */
 function parseDeployJson(stdout) {
   const parsed = extractJson(stdout);
@@ -76,6 +81,8 @@ function parseDeployJson(stdout) {
     endpoint: str(parsed.endpoint),
     status: str(parsed.status),
     version: str(parsed.version),
+    path: str(parsed.path),
+    deleted: typeof parsed.deleted === 'boolean' ? parsed.deleted : null,
   };
 }
 
