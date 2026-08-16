@@ -54,7 +54,14 @@ async function acquireRealCli() {
   const binary = path.join(installDir, artifact.binary);
   if (fs.existsSync(binary)) return { binary };
 
-  fs.mkdirSync(installDir, { recursive: true });
+  fs.mkdirSync(TMP_DIR, { recursive: true });
+
+  // `node --test` runs test FILES in parallel, so several processes reach this
+  // at once on a cold cache. Everything below is therefore staged under a
+  // pid-suffixed name and published with a single rename: a partially written
+  // archive is never hashed, and a partially extracted binary is never exec'd
+  // (which surfaced as `spawn ETXTBSY`, not as anything resembling its cause).
+  const stage = (target) => `${target}.${process.pid}.part`;
 
   // Version-scoped: archive names are identical across releases, so caching by
   // bare name means a stale download from a previous version fails verification
@@ -72,14 +79,26 @@ async function acquireRealCli() {
     if (!response.ok) {
       return { skip: `could not download ${url}: HTTP ${response.status}` };
     }
-    fs.writeFileSync(archivePath, Buffer.from(await response.arrayBuffer()));
+    const partial = stage(archivePath);
+    fs.writeFileSync(partial, Buffer.from(await response.arrayBuffer()));
+    fs.renameSync(partial, archivePath);
   }
 
   // Same verification the Action performs, against the same committed table.
   await verifyFileChecksum(archivePath, artifact.sha256, { source: baseUrl });
 
-  execFileSync('tar', ['-xzf', archivePath, '-C', installDir]);
-  fs.chmodSync(binary, 0o755);
+  const staging = stage(installDir);
+  fs.rmSync(staging, { recursive: true, force: true });
+  fs.mkdirSync(staging, { recursive: true });
+  execFileSync('tar', ['-xzf', archivePath, '-C', staging]);
+  fs.chmodSync(path.join(staging, artifact.binary), 0o755);
+
+  try {
+    fs.renameSync(staging, installDir);
+  } catch {
+    // Another process published first. Its copy is the same verified bytes.
+    fs.rmSync(staging, { recursive: true, force: true });
+  }
 
   return { binary };
 }
