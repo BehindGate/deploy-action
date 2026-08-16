@@ -28408,11 +28408,11 @@ const EXIT_USAGE = EXIT_CONFIG;
  * Turn an exit code into an actionable failure message.
  *
  * @param {number} code
- * @param {{path?: string, urlPinned?: boolean, usesToken?: boolean, cliMessage?: string|null}} [context]
+ * @param {{path?: string, usesToken?: boolean, cliMessage?: string|null}} [context]
  * @returns {{title: string, detail: string}}
  */
 function describeExitCode(code, context = {}) {
-  const { path, urlPinned = false, usesToken = true, cliMessage = null } = context;
+  const { path, usesToken = true, cliMessage = null } = context;
   const reported = cliMessage ? `\nbg-deploy reported: ${cliMessage}\n` : '';
 
   if (code === EXIT_SUCCESS) {
@@ -28439,11 +28439,12 @@ function describeExitCode(code, context = {}) {
         '  - `site-url` names a real site, with the path naming the app.'
       );
     }
-    // This Action validates the token's shape and the path before invoking the
-    // CLI, so the causes it could have caught are already ruled out. What is
-    // left is overwhelmingly the endpoint check -- and that one is security
-    // relevant, so it leads.
-    else if (urlPinned) {
+    // With a token, the endpoint is always pinned and the token's shape and the
+    // path are checked before the CLI runs, so the mismatch leads -- it is both
+    // the likeliest remaining cause and the security-relevant one. It is not the
+    // only one, though: a token can simply have stopped working, and describing
+    // that as a mismatch would send the reader after the wrong thing.
+    else {
       lines.push(
         'Because this Action already checks the token format and the path ' +
           'before running, the most likely cause is that the pinned endpoint ' +
@@ -28457,17 +28458,11 @@ function describeExitCode(code, context = {}) {
         '  - the endpoint is the one your token was issued for -- a token minted ' +
           'against one environment cannot deploy to another, and the endpoint ' +
           'defaults to production, and',
-        '  - `url`, where you set it, names that endpoint exactly.'
-      );
-    } else {
-      lines.push(
-        'Check that:',
-        '  - the secret referenced by `token:` exists and is non-empty ' +
-          '(an unset secret interpolates to an empty string rather than ' +
-          'failing the workflow),',
-        '  - the workflow is not running from a fork, where secrets are ' +
-          'unavailable by design,',
-        '  - the token has not expired or been revoked.'
+        '  - `url`, where you set it, names that endpoint exactly.',
+        '',
+        'If the endpoint is right, the credential itself is the other candidate: ' +
+          'check that the token has not expired or been revoked, and mint a new ' +
+          'one under Settings -> Deploy tokens if it has.'
       );
     }
 
@@ -29360,7 +29355,6 @@ async function run() {
   if (exitCode !== EXIT_SUCCESS) {
     const { title, detail } = describeExitCode(exitCode, {
       path: deployPath,
-      urlPinned: true,
       usesToken,
       cliMessage: parseErrorMessage({ stdout, stderr }),
     });
