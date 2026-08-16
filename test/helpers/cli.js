@@ -20,6 +20,16 @@ const { resolvePlatform } = require('../../src/core/platform');
 const TMP_DIR = path.join(__dirname, '..', '.tmp');
 
 /**
+ * Where tar(1) is looked for, as absolute paths.
+ *
+ * Naming the bare command would resolve it through PATH, which is inherited from
+ * whatever invoked the tests -- so an entry earlier in PATH decides what runs
+ * just before a downloaded binary is unpacked and executed. Both runners we test
+ * on ship /usr/bin/tar.
+ */
+const TAR_PATHS = ['/usr/bin/tar', '/bin/tar'];
+
+/**
  * @returns {Promise<{binary: string} | {skip: string}>}
  */
 async function acquireRealCli() {
@@ -91,10 +101,17 @@ async function acquireRealCli() {
     // Same verification the Action performs, against the same committed table.
     await verifyFileChecksum(archivePath, artifact.sha256, { source: baseUrl });
 
+    const tar = TAR_PATHS.find((candidate) => fs.existsSync(candidate));
+    if (!tar) {
+      return { skip: `no tar(1) found at ${TAR_PATHS.join(' or ')}` };
+    }
+
     const extracted = path.join(staging, 'cli');
     fs.mkdirSync(extracted);
-    execFileSync('tar', ['-xzf', archivePath, '-C', extracted]);
-    fs.chmodSync(path.join(extracted, artifact.binary), 0o755);
+    execFileSync(tar, ['-xzf', archivePath, '-C', extracted]);
+    // Owner-only: the binary is executed by this process and nothing else has
+    // any business reading, let alone running, a freshly downloaded executable.
+    fs.chmodSync(path.join(extracted, artifact.binary), 0o700);
 
     try {
       fs.renameSync(extracted, installDir);
