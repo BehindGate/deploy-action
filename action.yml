@@ -15,39 +15,113 @@ inputs:
       itself, so `index.html` lands at the root of the archive -- which is what
       the platform requires. Point this at your build output (`dist`, `build`,
       `public`, ...), not at the directory above it.
-    required: true
+
+      Required except with `delete-app: true`, which uploads nothing.
+    required: false
+    default: ''
+
+  env:
+    description: |
+      Internal. Selects the BehindGate environment this Action talks to, which
+      sets both the deploy endpoint and the host the CLI is downloaded from.
+
+      Deliberately absent from the README: the environments other than the
+      default are BehindGate's own, and nothing a user of this Action deploys to.
+      `url` and `download-base-url` are the documented way to reach any other
+      endpoint, and each wins over this input.
+
+      Values and rationale: docs/MAINTAINERS.md, "The undocumented `env` input".
+    required: false
+    default: 'prod'
 
   token:
     description: |
       A BehindGate deploy token, generated in the workspace dashboard under
       Settings -> Deploy tokens. Always pass this from a secret, never inline.
 
-      The token is the only credential, and it carries BOTH the target app and
-      the deploy endpoint. See the `url` input below for why that matters.
+      Optional. Without it the CLI authenticates as the CI job itself: it
+      exchanges the runner's OIDC token for a deploy token that lives fifteen
+      minutes, so the repository stores no long-lived secret. That mode needs
+      `permissions: id-token: write` on the job, and a CI trust for this
+      repository in the workspace (Settings -> CI trusts). It is also the only
+      mode in which `create-app` and `delete-app` work, because a deploy token is
+      pinned to one app that already exists.
+
+      A deploy token carries BOTH the target app and the deploy endpoint, which
+      is why it cannot be combined with `site-url` -- see that input.
 
       The value is masked in the log and is passed to the CLI through the
       environment, never on the command line.
-    required: true
+    required: false
+    default: ''
 
   url:
     description: |
-      Pin the deploy endpoint instead of trusting the endpoint claim inside the
-      token.
+      Pin the deploy endpoint to an exact URL, overriding `env`.
 
-      Strongly recommended. A deploy token is simultaneously a bearer credential
-      and a routing instruction, so anyone able to change this repository's
-      secret can point the upload at a host they control -- and the job still
-      succeeds, because from the runner's perspective nothing went wrong.
+      Use this for a local or dev endpoint, or where you would rather write the
+      address out than name an environment. For the two published environments
+      `env` is the shorter way to say the same thing, and it pins the download
+      host to match.
 
-      Pinning the endpoint here stops that twice over: the destination lives in
-      the workflow file, where code review and branch protection cover it, and
-      since CLI 2026.8.0 a token whose own claim disagrees with this value is
-      refused outright rather than silently overridden. A swapped token then
-      fails the job instead of quietly deploying somewhere else.
+      Why pinning matters at all: a deploy token is simultaneously a bearer
+      credential and a routing instruction, so anyone able to change this
+      repository's secret could point the upload at a host they control -- and
+      the job would still succeed, because from the runner's perspective nothing
+      went wrong. A pinned endpoint lives in the workflow file, where code review
+      and branch protection cover it, and since CLI 2026.8.0 a token whose own
+      claim disagrees with it is refused outright rather than silently
+      overridden.
 
-      Example: https://app.behindgate.net/api/deploy
+      Note this is the DEPLOY ENDPOINT, not the address your site is served on
+      (that is `site-url`), and it carries the `/api/deploy` path.
+
+      Example: https://app.behindgate.com/api/deploy
     required: false
     default: ''
+
+  site-url:
+    description: |
+      What to deploy to, written as the URL it serves on: the host names the
+      site and the path names the app. No path means the site root.
+
+      Example: https://docs.example.com/preview/pr-42
+
+      Only for the CI-job credential above. A deploy token already names the site
+      and the app it deploys to, so passing both `token` and `site-url` is a
+      configuration error and fails the step immediately rather than deploying to
+      whichever the CLI happens to prefer.
+
+      This is NOT the deploy endpoint (`url` / `env`). They are different values:
+      one is where the release is served from, the other is the API the release
+      is uploaded to.
+    required: false
+    default: ''
+
+  create-app:
+    description: |
+      Create the app named by `site-url` if it is not there yet.
+
+      Without it a missing app is an error, so a mistyped path cannot quietly
+      become a new app nobody ever looks at.
+
+      Needs the CI-job credential (no `token`) and a CI trust holding
+      "create apps".
+    required: false
+    default: 'false'
+
+  delete-app:
+    description: |
+      Delete the app named by `site-url` and exit without deploying, for tearing
+      a preview down when its pull request closes.
+
+      A path with no app still succeeds, so a teardown job is safe to re-run.
+      `path` is not required in this mode.
+
+      Needs the CI-job credential (no `token`) and a CI trust holding
+      "delete apps".
+    required: false
+    default: 'false'
 
   cli-version:
     description: |
@@ -77,15 +151,12 @@ inputs:
 
   download-base-url:
     description: |
-      The host to download the CLI from. Archives are fetched from
-      `<download-base-url>/downloads/<archive>`.
+      The host to download the CLI from, overriding `env`. Archives are fetched
+      from `<download-base-url>/downloads/<version>/<archive>`.
 
-      Exposed because BehindGate serves downloads from a different host per
-      environment, so this cannot be hardcoded. Override it only when you target
-      a non-production environment; the checksums in versions.json must match
-      whatever that host serves.
-
-      Defaults to `defaultDownloadBaseUrl` in versions.json.
+      For the two published environments `env` sets this for you. Override it
+      when you serve the CLI from somewhere else entirely; the checksums in
+      versions.json must match whatever that host serves.
     required: false
     default: ''
 
@@ -95,13 +166,16 @@ outputs:
       The identifier of the published release, read from the CLI's `--json`
       output.
 
+      Empty for `delete-app: true`, which publishes no release.
+
   url:
     description: |
       The public address of the deployed site, read from the CLI's `--json`
       output.
 
-      Empty only if the CLI reports no address; the step still succeeds in that
-      case, and a warning explains why the outputs could not be populated.
+      Empty for `delete-app: true`, and empty if the CLI reports no address; the
+      step still succeeds in that case, and a warning explains why the outputs
+      could not be populated.
 
 runs:
   using: 'node24'

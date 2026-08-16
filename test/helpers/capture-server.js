@@ -13,12 +13,21 @@
  *   PUT  <uploadUrl>      -> the zip, Content-Type: application/zip
  *   GET  <url>/<releaseId> -> polled until status is no longer "extracting"
  *   POST <url>/publish    -> {"releaseId": "..."}
+ *
+ * Added in 2026.8.5, for a job that authenticates as itself rather than with a
+ * deploy token (`--site-url`, `--create-app`, `--delete-app`):
+ *   POST   <url>/oidc/token -> form-encoded RFC 8693 exchange of the runner's
+ *                              OIDC token; answers {access_token, ...}
+ *   GET    <url>/apps       -> the apps the trust can see: {appId, pathPrefix, ...},
+ *                              matched against the path half of --site-url
+ *   POST   <url>/apps       -> {"name", "pathPrefix"} to create one
+ *   DELETE <url>/apps/<id>  -> 204 to tear one down
  */
 
 const http = require('node:http');
 
 /**
- * @returns {Promise<{url: string, requests: object[], uploads: Buffer[], close: () => Promise<void>}>}
+ * @returns {Promise<{url: string, requests: object[], uploads: Buffer[], apps: object[], created: object[], deleted: string[], exchanges: object[], close: () => Promise<void>}>}
  */
 function startCaptureServer(options = {}) {
   const {
@@ -26,10 +35,14 @@ function startCaptureServer(options = {}) {
     liveUrl = 'https://demo.test.behindgate.net/my-app/',
     pollsBeforeReady = 1,
     failCreateWith = null,
+    apps = [],
   } = options;
 
   const requests = [];
   const uploads = [];
+  const created = [];
+  const deleted = [];
+  const exchanges = [];
   let polls = 0;
 
   const server = http.createServer((req, res) => {
@@ -53,6 +66,37 @@ function startCaptureServer(options = {}) {
       };
 
       const base = `http://127.0.0.1:${server.address().port}`;
+
+      // 0a. exchange the runner's OIDC token for a short-lived deploy token
+      if (req.method === 'POST' && pathname.endsWith('/oidc/token')) {
+        const form = new URLSearchParams(body.toString('utf8'));
+        exchanges.push(Object.fromEntries(form));
+        return send(200, {
+          access_token: fakeJwt({ url: base }),
+          token_type: 'Bearer',
+          expires_in: 900,
+        });
+      }
+
+      // 0b. resolve --site-url against the apps the trust can see
+      if (req.method === 'GET' && pathname.endsWith('/apps')) {
+        return send(200, apps);
+      }
+
+      if (req.method === 'POST' && pathname.endsWith('/apps')) {
+        const app = JSON.parse(body.toString('utf8'));
+        created.push(app);
+        // The CLI resolves an app by `pathPrefix` and addresses it by `appId`.
+        const record = { appId: `app_${created.length}`, ...app };
+        apps.push(record);
+        return send(201, record);
+      }
+
+      if (req.method === 'DELETE' && pathname.includes('/apps/')) {
+        deleted.push(pathname.slice(pathname.lastIndexOf('/') + 1));
+        res.writeHead(204);
+        return res.end();
+      }
 
       // 1. create a release
       if (req.method === 'POST' && !pathname.endsWith('/publish') && !pathname.startsWith('/upload/')) {
@@ -99,6 +143,47 @@ function startCaptureServer(options = {}) {
         url: `http://127.0.0.1:${server.address().port}/`,
         requests,
         uploads,
+        apps,
+        created,
+        deleted,
+        exchanges,
+        close: () => new Promise((done) => server.close(done)),
+      });
+    });
+  });
+}
+
+/**
+ * A stand-in for the GitHub Actions token service.
+ *
+ * Without a deploy token the CLI asks the runner for an OIDC token and exchanges
+ * it, which is the credential mode `--create-app` and `--delete-app` require.
+ * `env()` returns the variables the real runner exports when a job is granted
+ * `id-token: write`, so the CLI takes that path against a local server.
+ *
+ * @returns {Promise<{url: string, requests: object[], env: () => object, close: () => Promise<void>}>}
+ */
+function startActionsOidcProvider(options = {}) {
+  const { token = fakeJwt({ iss: 'https://token.actions.githubusercontent.com' }) } = options;
+  const requests = [];
+
+  const server = http.createServer((req, res) => {
+    requests.push({ method: req.method, path: req.url, headers: req.headers });
+    res.writeHead(200, { 'content-type': 'application/json' });
+    res.end(JSON.stringify({ value: token, count: 1 }));
+  });
+
+  return new Promise((resolve) => {
+    server.listen(0, '127.0.0.1', () => {
+      const url = `http://127.0.0.1:${server.address().port}/token`;
+      resolve({
+        url,
+        requests,
+        env: () => ({
+          GITHUB_ACTIONS: 'true',
+          ACTIONS_ID_TOKEN_REQUEST_URL: url,
+          ACTIONS_ID_TOKEN_REQUEST_TOKEN: 'fake-request-token',
+        }),
         close: () => new Promise((done) => server.close(done)),
       });
     });
@@ -120,4 +205,4 @@ function fakeJwt(claims = {}) {
   return `${header}.${payload}.ZmFrZXNpZ25hdHVyZQ`;
 }
 
-module.exports = { startCaptureServer, fakeJwt };
+module.exports = { startCaptureServer, startActionsOidcProvider, fakeJwt };

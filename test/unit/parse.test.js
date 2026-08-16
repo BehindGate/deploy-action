@@ -27,6 +27,11 @@ const SUCCESS_STDERR = [
   '',
 ].join('\n');
 
+/** Verbatim stdout from a teardown (`bg-deploy --delete-app --json` 2026.8.5). */
+const DELETE_STDOUT =
+  '{"path":"/preview/pr-42","deleted":true,' +
+  '"endpoint":"https://app.test.behindgate.net/api/deploy","version":"2026.8.5"}\n';
+
 describe('parseDeployJson', () => {
   test('reads every field from a successful run', () => {
     assert.deepEqual(parseDeployJson(SUCCESS_STDOUT), {
@@ -35,7 +40,30 @@ describe('parseDeployJson', () => {
       endpoint: 'https://app.behindgate.com/api/deploy',
       status: 'published',
       version: '2026.8.3',
+      path: null,
+      deleted: null,
     });
+  });
+
+  test('reads a teardown, which reports no release and no address', () => {
+    assert.deepEqual(parseDeployJson(DELETE_STDOUT), {
+      releaseId: null,
+      url: null,
+      endpoint: 'https://app.test.behindgate.net/api/deploy',
+      status: null,
+      version: '2026.8.5',
+      path: '/preview/pr-42',
+      deleted: true,
+    });
+  });
+
+  test('deleted: false survives as false, not as absent', () => {
+    // A teardown of a path with no app succeeds with deleted:false, so a
+    // teardown job is safe to re-run. Collapsing that to null would report
+    // "nothing to delete" as an unreadable result.
+    const parsed = parseDeployJson('{"path":"/preview/pr-42","deleted":false}');
+    assert.equal(parsed.deleted, false);
+    assert.equal(parsed.releaseId, null);
   });
 
   test('the deployed URL is now available, so the url output can populate', () => {

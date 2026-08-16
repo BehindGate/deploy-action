@@ -25,18 +25,30 @@ describe('describeExitCode', () => {
   // With `url` pinned, the CLI refuses to deploy when the token claims a
   // different endpoint. Since this Action already validates the token format
   // and the path itself, that refusal is the most likely remaining cause of a 2.
-  test('exit 2 with a pinned url leads with the endpoint mismatch', () => {
+  test('exit 2 with a pinned endpoint leads with the endpoint mismatch', () => {
     const { detail } = describeExitCode(EXIT_CONFIG, { urlPinned: true });
-    assert.match(detail, /`url` input does not match/);
+    assert.match(detail, /pinned endpoint does not match/);
     assert.match(detail, /swapped secret/);
-    assert.match(detail, /test-environment token cannot deploy to production/);
+    assert.match(detail, /one environment cannot deploy to another/);
   });
 
-  test('exit 2 without a pinned url points at the secret instead', () => {
+  test('exit 2 without a pinned endpoint points at the secret instead', () => {
     const { detail } = describeExitCode(EXIT_CONFIG, { urlPinned: false });
     assert.match(detail, /empty string/);
     assert.match(detail, /fork/);
-    assert.doesNotMatch(detail, /`url` input does not match/);
+    assert.doesNotMatch(detail, /pinned endpoint does not match/);
+  });
+
+  // Without a token none of the secret-shaped causes apply: what the job may do
+  // is decided by the workspace's CI trust, not by a value in this repository.
+  test('exit 2 in CI-trust mode points at the trust, not at a secret', () => {
+    const { detail } = describeExitCode(EXIT_CONFIG, { urlPinned: true, usesToken: false });
+    assert.match(detail, /id-token: write/);
+    assert.match(detail, /CI trust/);
+    assert.match(detail, /create apps/);
+    assert.match(detail, /delete apps/);
+    assert.doesNotMatch(detail, /swapped secret/);
+    assert.doesNotMatch(detail, /expired or been revoked/);
   });
 
   test('exit 1 is reported as a runtime failure, not a config problem', () => {

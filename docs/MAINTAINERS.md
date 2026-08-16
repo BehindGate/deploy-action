@@ -150,6 +150,59 @@ same commit if the new version should become the default.
 Confirm the version string with `bg-deploy --version`, which prints e.g.
 `bg-deploy 2026.07.1 (git 79f1f9f)`.
 
+## The undocumented `env` input
+
+`env` selects the BehindGate environment and resolves the two addresses that have
+to agree — the deploy endpoint and the host the CLI is downloaded from:
+
+| `env` | Deploy endpoint | CLI downloads |
+| --- | --- | --- |
+| `prod` (default) | `https://app.behindgate.com/api/deploy` | `https://app.behindgate.com` |
+| `test` | `https://app.test.behindgate.net/api/deploy` | `https://app.test.behindgate.net` |
+
+Anything else fails the step rather than falling back to the default, which would
+deploy to an environment nobody named. `url` and `download-base-url` each win
+over it, independently: overriding the endpoint leaves downloads on the
+environment's host.
+
+**It is deliberately absent from the README**, because the test environment is
+BehindGate's own and not somewhere a user of this Action deploys. `url` and
+`download-base-url` are the documented way to reach any other endpoint, and they
+cover every case a user has. Keep it that way when editing the README: the table
+above, `action.yml`, and `src/core/environments.js` are where it is written down.
+
+Nothing user-facing names the input either. The endpoint is reported in the log
+and the job summary as "pinned via the `url` input" or "pinned via the prod
+default", and the exit-2 guidance in `src/core/errors.js` talks about the
+endpoint rather than about `env`. Check that when changing those messages.
+
+The input still has to be declared in `action.yml`: passing an undeclared input
+makes the runner log "Unexpected input(s)" on every run, which is worse than a
+terse description.
+
+## The preview inputs run ahead of the pinned CLI
+
+`site-url`, `create-app` and `delete-app` map onto CLI flags added in
+**2026.8.5**, which at the time of writing is published on the test host only —
+production still serves 2026.8.4, and `/downloads/2026.8.5/` there answers 403.
+Nothing was pinned for it: adding a test-host-captured entry would put production
+users one `cli-version:` away from a 403, and `bump` never overwrites an existing
+entry, so a hand-added key would also stop the weekly job adopting the production
+build under the same name.
+
+So the inputs ship first and start working when
+[`cli-update.yml`](../.github/workflows/cli-update.yml) adopts 2026.8.5 from the
+production host. No change to this Action is needed then. Until it lands:
+
+- `test/integration/preview.test.js` skips itself, detecting the flags from
+  `--help` rather than from a version string;
+- `BG_CLI_BINARY=/path/to/bg-deploy npm run test:integration` runs it against a
+  build fetched by hand. That escape hatch is test-only — the Action itself never
+  runs an unverified binary.
+
+Drop the skip only when it stops firing on its own; a skipping preview suite is
+the signal that the pin has not caught up yet.
+
 ## Hosts are per-environment
 
 BehindGate serves downloads from a different host per environment — production
