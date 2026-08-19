@@ -20,10 +20,15 @@
 
 const versions = require('./versions');
 
+/** ` at <source>`, or nothing. Kept out of the messages so they stay readable. */
+function at(source) {
+  return source ? ` at ${source}` : '';
+}
+
 class MalformedChecksumsError extends Error {
   constructor(source) {
     super(
-      `Could not read any checksum from the manifest${source ? ` at ${source}` : ''}. ` +
+      `Could not read any checksum from the manifest${at(source)}. ` +
         `Expected lines of "<64 hex digits>  <filename>". Refusing to run a ` +
         `download that nothing describes.`
     );
@@ -34,7 +39,7 @@ class MalformedChecksumsError extends Error {
 class ChecksumNotListedError extends Error {
   constructor(archive, listed, source) {
     super(
-      `The manifest${source ? ` at ${source}` : ''} has no entry for ${archive}. ` +
+      `The manifest${at(source)} has no entry for ${archive}. ` +
         `It lists: ${listed.join(', ') || '(nothing)'}. ` +
         `The host is serving a build for this platform that it does not describe, ` +
         `so there is nothing to verify the download against.`
@@ -106,9 +111,15 @@ function latestVersion(index, { source } = {}) {
 
   const latest = parsed && typeof parsed.latest === 'string' ? parsed.latest.trim() : '';
 
+  // The index is remote data that decides the path of the next request, so what
+  // it calls a version has to look like one before it is used as one.
+  if (latest && !versions.isUrlSafeVersion(latest)) {
+    throw new versions.UnsafeVersionError(latest);
+  }
+
   if (!latest) {
     throw new Error(
-      `The release index${source ? ` at ${source}` : ''} does not report a ` +
+      `The release index${at(source)} does not report a ` +
         `"latest" version, so there is nothing to download. Pin one with ` +
         `\`cli-version\` if the host's index is broken.`
     );

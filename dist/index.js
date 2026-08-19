@@ -28799,10 +28799,15 @@ module.exports = {
 
 const versions = __nccwpck_require__(2200);
 
+/** ` at <source>`, or nothing. Kept out of the messages so they stay readable. */
+function at(source) {
+  return source ? ` at ${source}` : '';
+}
+
 class MalformedChecksumsError extends Error {
   constructor(source) {
     super(
-      `Could not read any checksum from the manifest${source ? ` at ${source}` : ''}. ` +
+      `Could not read any checksum from the manifest${at(source)}. ` +
         `Expected lines of "<64 hex digits>  <filename>". Refusing to run a ` +
         `download that nothing describes.`
     );
@@ -28813,7 +28818,7 @@ class MalformedChecksumsError extends Error {
 class ChecksumNotListedError extends Error {
   constructor(archive, listed, source) {
     super(
-      `The manifest${source ? ` at ${source}` : ''} has no entry for ${archive}. ` +
+      `The manifest${at(source)} has no entry for ${archive}. ` +
         `It lists: ${listed.join(', ') || '(nothing)'}. ` +
         `The host is serving a build for this platform that it does not describe, ` +
         `so there is nothing to verify the download against.`
@@ -28885,9 +28890,15 @@ function latestVersion(index, { source } = {}) {
 
   const latest = parsed && typeof parsed.latest === 'string' ? parsed.latest.trim() : '';
 
+  // The index is remote data that decides the path of the next request, so what
+  // it calls a version has to look like one before it is used as one.
+  if (latest && !versions.isUrlSafeVersion(latest)) {
+    throw new versions.UnsafeVersionError(latest);
+  }
+
   if (!latest) {
     throw new Error(
-      `The release index${source ? ` at ${source}` : ''} does not report a ` +
+      `The release index${at(source)} does not report a ` +
         `"latest" version, so there is nothing to download. Pin one with ` +
         `\`cli-version\` if the host's index is broken.`
     );
@@ -29280,6 +29291,48 @@ function semverSafeVersion(version) {
 }
 
 /**
+ * Versions that may be spliced into a URL path.
+ *
+ * A version reaches these builders from a workflow input or, on an unpinned
+ * environment, from the host's own release index -- so it is remote data
+ * steering the next request. Anything outside this shape is refused rather than
+ * escaped: `latest: "../../elsewhere"` is not a version, and treating it as one
+ * would fetch a path nobody named.
+ *
+ * The character set is deliberately one that percent-encoding leaves untouched,
+ * so validating and encoding cannot disagree about what the segment is.
+ */
+const URL_SAFE_VERSION = /^[A-Za-z0-9][A-Za-z0-9._~-]{0,63}$/;
+
+class UnsafeVersionError extends Error {
+  constructor(version) {
+    super(
+      `"${version}" is not a usable bg-deploy version. Expected letters, ` +
+        `digits, dots, hyphens, underscores or tildes (up to 64 characters), ` +
+        `such as 2026.8.5. A value outside that cannot be part of a download ` +
+        `URL, since it would change which path is fetched.`
+    );
+    this.name = 'UnsafeVersionError';
+    this.version = version;
+  }
+}
+
+/** Whether a version can be used as a URL path segment. */
+function isUrlSafeVersion(version) {
+  return URL_SAFE_VERSION.test(String(version ?? ''));
+}
+
+/**
+ * The version as a URL path segment: checked, then encoded.
+ *
+ * @throws {UnsafeVersionError}
+ */
+function versionSegment(version) {
+  if (!isUrlSafeVersion(version)) throw new UnsafeVersionError(version);
+  return encodeURIComponent(String(version));
+}
+
+/**
  * Drop any trailing slashes from a base URL.
  *
  * A loop rather than `replace(/\/+$/, '')`: the regex form backtracks, so its
@@ -29309,7 +29362,7 @@ function withoutTrailingSlash(value) {
  * the same host), so hardcoding one would break every non-production user.
  */
 function downloadUrl(baseUrl, version, archive) {
-  return `${withoutTrailingSlash(baseUrl)}/downloads/${version}/${archive}`;
+  return `${withoutTrailingSlash(baseUrl)}/downloads/${versionSegment(version)}/${archive}`;
 }
 
 /** URL of the published release index (`{latest, versions: [...]}`). */
@@ -29319,7 +29372,7 @@ function indexUrl(baseUrl) {
 
 /** URL of the checksum manifest a host serves beside one version's archives. */
 function checksumsUrl(baseUrl, version) {
-  return `${withoutTrailingSlash(baseUrl)}/downloads/${version}/SHA256SUMS.txt`;
+  return `${withoutTrailingSlash(baseUrl)}/downloads/${versionSegment(version)}/SHA256SUMS.txt`;
 }
 
 /**
@@ -29357,6 +29410,9 @@ module.exports = {
   semverSafeVersion,
   cacheKey,
   withoutTrailingSlash,
+  isUrlSafeVersion,
+  versionSegment,
+  UnsafeVersionError,
   downloadUrl,
   indexUrl,
   checksumsUrl,

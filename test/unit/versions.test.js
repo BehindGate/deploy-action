@@ -221,6 +221,30 @@ describe('downloadUrl', () => {
     );
   });
 
+  test('a version that could change the path is refused, not escaped', () => {
+    // On an unpinned environment the version comes from the host's own index,
+    // so it is remote data deciding which path the next request fetches.
+    for (const version of ['../../elsewhere', 'a/b', '2026.8.5?x=1', '2026.8.5#f', '', ' ']) {
+      assert.throws(
+        () => versions.checksumsUrl('https://app.test.behindgate.net', version),
+        versions.UnsafeVersionError,
+        JSON.stringify(version)
+      );
+      assert.throws(
+        () => versions.downloadUrl('https://app.test.behindgate.net', version, 'x.tar.gz'),
+        versions.UnsafeVersionError
+      );
+    }
+  });
+
+  test('a real version passes through encoding unchanged', () => {
+    // The accepted character set is one percent-encoding leaves alone, so the
+    // check and the encoding cannot disagree about what the segment is.
+    for (const version of ['2026.8.5', '2026.07.1-rc.1', '1.2.3_4~5']) {
+      assert.equal(versions.versionSegment(version), version);
+    }
+  });
+
   test('checksumsUrl points at the manifest beside that version', () => {
     assert.equal(
       versions.checksumsUrl('https://app.test.behindgate.net/', '2026.8.5'),

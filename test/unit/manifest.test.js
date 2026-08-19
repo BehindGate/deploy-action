@@ -83,6 +83,13 @@ describe('latestVersion', () => {
     assert.equal(latestVersion({ latest: '2026.8.5' }), '2026.8.5');
   });
 
+  test('a latest that is not version-shaped is refused', () => {
+    // The value steers the path of the next request; a traversal or a query
+    // string in it would fetch something nobody named.
+    assert.throws(() => latestVersion('{"latest":"../../elsewhere"}'), /not a usable bg-deploy version/);
+    assert.throws(() => latestVersion('{"latest":"2026.8.5?x=1"}'), /not a usable bg-deploy version/);
+  });
+
   test('an index with no latest is an error rather than an empty version', () => {
     // An empty version would build /downloads//bg-deploy-... and 404 later.
     assert.throws(() => latestVersion('{"versions":[]}'), /does not report a "latest"/);
