@@ -1,5 +1,5 @@
 {
-  "name": "behindgate-deploy-action",
+  "name": "behindgate-deploy",
   "version": "1.0.0",
   "private": true,
   "description": "GitHub Action and GitLab CI/CD component that deploy a static site to BehindGate using the bg-deploy CLI",
@@ -27,7 +27,7 @@
   ],
   "repository": {
     "type": "git",
-    "url": "git+https://github.com/behindgate/deploy-action.git"
+    "url": "git+https://github.com/behindgate/deploy.git"
   },
   "license": "MIT",
   "dependencies": {

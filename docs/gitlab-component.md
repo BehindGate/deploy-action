@@ -16,7 +16,7 @@ generated from [`src/gitlab/component.yml`](../src/gitlab/component.yml),
 stages: [build, deploy]
 
 include:
-  - component: $CI_SERVER_FQDN/behindgate/deploy-action/deploy@v1
+  - component: $CI_SERVER_FQDN/behindgate/deploy/deploy@v1
     inputs:
       path: dist
       # Pin the endpoint rather than trusting the token's own claim.
@@ -72,7 +72,7 @@ HTTPS at pipeline creation and supports the same inputs:
 
 ```yaml
 include:
-  - remote: https://raw.githubusercontent.com/behindgate/deploy-action/v1/templates/deploy.yml
+  - remote: https://raw.githubusercontent.com/behindgate/deploy/v1/templates/deploy.yml
     inputs:
       path: dist
       url: https://app.behindgate.com/api/deploy
