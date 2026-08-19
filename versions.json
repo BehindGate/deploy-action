@@ -25,7 +25,7 @@
     "verify a signature at runtime and always take the current build. Tracked in the",
     "hand-over brief at docs/app-repo-release-prompt.md."
   ],
-  "defaultVersion": "2026.8.3",
+  "defaultVersion": "2026.8.4",
   "defaultDownloadBaseUrl": "https://app.behindgate.com",
   "versions": {
     "2026.8.3": {
@@ -62,6 +62,43 @@
           "archive": "bg-deploy-windows-arm64.zip",
           "binary": "bg-deploy.exe",
           "sha256": "e48e6ee629c71b01ec67421fd416a5a78ccd9f203fc7f6b8c1a25aa1a2632be2"
+        }
+      }
+    },
+    "2026.8.4": {
+      "capturedFrom": "https://app.behindgate.com",
+      "capturedAt": "2026-08-17",
+      "commit": "c6e571894c645f67914ab110738dedf27ae665b2",
+      "platforms": {
+        "darwin-amd64": {
+          "archive": "bg-deploy-darwin-amd64.tar.gz",
+          "binary": "bg-deploy",
+          "sha256": "e07076953f12eeec676d1a1d60bc4a226357826de233c8a1104b9c5d289315fb"
+        },
+        "darwin-arm64": {
+          "archive": "bg-deploy-darwin-arm64.tar.gz",
+          "binary": "bg-deploy",
+          "sha256": "100e5eae8496efddadec2b24776f0552143e641a870ce1b3cd323a846490f2b3"
+        },
+        "linux-amd64": {
+          "archive": "bg-deploy-linux-amd64.tar.gz",
+          "binary": "bg-deploy",
+          "sha256": "4db567f9a40b6965722cbe431a67a83e129b68dd1cbfc7a4e247bf6264a27c56"
+        },
+        "linux-arm64": {
+          "archive": "bg-deploy-linux-arm64.tar.gz",
+          "binary": "bg-deploy",
+          "sha256": "585668505f54dbec29a3039070656b969257dd484bf1b2fafdeee4ec8c450068"
+        },
+        "windows-amd64": {
+          "archive": "bg-deploy-windows-amd64.zip",
+          "binary": "bg-deploy.exe",
+          "sha256": "3d7eb7ee54b9e3ccfa5cff82234cbe28cae8c8c2c51876fe90311f8295b12a61"
+        },
+        "windows-arm64": {
+          "archive": "bg-deploy-windows-arm64.zip",
+          "binary": "bg-deploy.exe",
+          "sha256": "9c556ac0cccd21fd52783ba9d749f30ebc8f7b1d59963b5cdc6bf234ae473155"
         }
       }
     }

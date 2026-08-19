@@ -34,9 +34,6 @@ jobs:
         with:
           path: dist
           token: ${{ secrets.BEHINDGATE_TOKEN }}
-          # Pin the endpoint rather than trusting the token's own claim.
-          # See "Why you should pin url" for how to find yours.
-          url: https://app.behindgate.com/api/deploy
 ```
 
 Generate a deploy token in the BehindGate dashboard under **Settings → Deploy
@@ -49,20 +46,27 @@ the site, so that `index.html` sits at the top of it.
 
 | Input | Required | Default | Description |
 | --- | --- | --- | --- |
-| `path` | yes | — | Folder to deploy, or an existing `.zip` to upload as-is. |
-| `token` | yes | — | BehindGate deploy token. Always pass from a secret. |
-| `url` | no | — | Pin the deploy endpoint. **Strongly recommended** — see below. |
+| `path` | yes¹ | — | Folder to deploy, or an existing `.zip` to upload as-is. |
+| `token` | no² | — | BehindGate deploy token. Always pass from a secret. Without it the job authenticates as itself — see [Deploying without a token](#deploying-without-a-token). |
+| `site-url` | no | — | What to deploy to, as the URL it serves on: the host names the site, the path names the app. Only with the CI-job credential; cannot be combined with `token`. |
+| `create-app` | no | `false` | Create the app named by `site-url` if it does not exist yet. |
+| `delete-app` | no | `false` | Delete the app named by `site-url` and exit without deploying. |
+| `url` | no | `https://app.behindgate.com/api/deploy/releases` | Pin the deploy endpoint to an exact URL. For a local or dev endpoint — see [Why the endpoint is pinned](#why-the-endpoint-is-pinned). |
 | `cli-version` | no | `defaultVersion` from [`versions.json`](versions.json) | Escape hatch to hold a specific `bg-deploy` version after a bad release. Normally leave unset — see [Which CLI version you get](#which-cli-version-you-get). |
-| `download-base-url` | no | `https://app.behindgate.com` | Host to download the CLI from. Override only for non-production environments (for example `https://app.test.behindgate.net`). |
+| `download-base-url` | no | `https://app.behindgate.com` | Host to download the CLI from. |
+
+¹ Except with `delete-app: true`, which uploads nothing.
+² Required unless the job authenticates as itself; `create-app` and `delete-app`
+work only in that mode.
 
 ## Outputs
 
 | Output | Description |
 | --- | --- |
-| `release-id` | Identifier of the published release. |
-| `url` | Public address of the deployed site, read from the CLI's `--json` output. |
+| `release-id` | Identifier of the published release. Empty for `delete-app`. |
+| `url` | Public address of the deployed site, read from the CLI's `--json` output. Empty for `delete-app`. |
 
-## Why you should pin `url`
+## Why the endpoint is pinned
 
 A BehindGate deploy token is not only a credential. It is *also* a routing
 instruction: the endpoint the CLI uploads to is a claim inside the token itself.
@@ -73,46 +77,125 @@ upload succeeds, the CLI prints `✓ Deployed`, the step exits `0`, and the
 workflow goes green. Your real site simply stops receiving updates while your
 build output goes somewhere else.
 
-Setting `url` removes that, in two ways. The destination lives in your workflow
-file, where code review and branch protection cover it rather than a secret a
-single compromised account can rewrite — and since CLI 2026.8.0, a token whose
-own claim disagrees with your pinned `url` is **refused outright** rather than
-silently overridden. A swapped secret now fails the job instead of quietly
-succeeding somewhere else. Both behaviours are covered in
+Pinning removes that, in two ways. The destination lives in your workflow file,
+where code review and branch protection cover it rather than a secret a single
+compromised account can rewrite — and since CLI 2026.8.0, a token whose own claim
+disagrees with the pinned endpoint is **refused outright** rather than silently
+overridden. A swapped secret now fails the job instead of quietly succeeding
+somewhere else. Both behaviours are covered in
 [`test/integration/deploy.test.js`](test/integration/deploy.test.js).
 
-```yaml
-- uses: behindgate/deploy-action@v1
-  with:
-    path: dist
-    token: ${{ secrets.BEHINDGATE_TOKEN }}
-    url: https://app.behindgate.com/api/deploy   # pinned, reviewable
-```
+This is why the endpoint defaults to `https://app.behindgate.com/api/deploy/releases`
+rather than to "whatever the token says": the safe destination is the one that
+does not move when a secret does.
 
-**Finding your endpoint.** Run the step once *without* `url`. The CLI reports the
-endpoint it used on its first line:
-
-```
-Deploying to https://app.behindgate.com/api/deploy
-```
-
-Copy that value into `url`. From then on the destination is fixed by your
-workflow rather than by the token.
-
-**Write it as a literal.** You can also reference a repository or organisation
-variable (`url: ${{ vars.BEHINDGATE_URL }}`), which is convenient when one
-workflow targets several environments — but be clear about the trade-off. A
-literal in the workflow file is protected by code review and branch protection.
-A variable moves the value back into mutable repository settings, so whoever can
-change the secret can often change the variable too, and the pin stops being a
-pin. Prefer the literal; reach for a variable only when you genuinely need the
-indirection.
+Set `url` when you need a different endpoint — a local or dev instance. Write it
+as a literal. You can reference a repository or organisation variable
+(`url: ${{ vars.BEHINDGATE_URL }}`), but be clear about the trade-off: a literal
+is protected by code review and branch protection, while a variable moves the
+value back into mutable repository settings, so whoever can change the secret can
+often change the variable too — and the pin stops being a pin.
 
 Never put the endpoint in a *secret*. It is not sensitive, and storing it beside
 the token means a single compromised store controls both the credential and the
 destination — which looks like pinning while providing none of its benefit.
 
-If you omit `url`, the Action emits a warning explaining what it is trusting.
+**Leaving `url` unset used to mean "upload wherever the token says".** It now
+means the production endpoint above, and the "endpoint not pinned" warning is
+gone with it. A token minted for anywhere else needs its endpoint written into
+the workflow, or the CLI refuses the deploy on the mismatch — which is the whole
+point of the paragraph above.
+
+## Deploying without a token
+
+`token` is optional. Without it the CLI authenticates as the CI job itself: it
+exchanges the OIDC token GitHub mints for the run for a deploy token that lives
+fifteen minutes, so the repository stores no long-lived secret at all.
+
+That needs three things:
+
+- `permissions: id-token: write` on the job, which is what mints the OIDC token;
+- a CI trust for this repository in the workspace, under **Settings → CI trusts**.
+
+The endpoint comes from the default, or from `url` where you set one; there is no
+token to carry one in this mode.
+
+It is also the **only** mode in which `create-app` and `delete-app` work, because
+a deploy token is pinned to one app that already exists: it can neither create
+another nor delete the one it names. Passing `token` together with `site-url`,
+`create-app` or `delete-app` fails the step immediately, before anything is
+downloaded or uploaded.
+
+## Per-pull-request previews
+
+Deploy each pull request to its own app, and tear it down when the pull request
+closes. `site-url` names the target as the URL it serves on: the **host** names
+the site, the **path** names the app.
+
+```yaml
+name: Preview
+
+on:
+  pull_request:
+    types: [opened, synchronize, reopened, closed]
+
+jobs:
+  preview:
+    if: github.event.action != 'closed'
+    runs-on: ubuntu-latest
+    permissions:
+      contents: read
+      id-token: write        # mints the OIDC token; no deploy token needed
+    steps:
+      - uses: actions/checkout@v4
+      - uses: actions/setup-node@v4
+        with:
+          node-version: 22
+      - run: npm ci && npm run build
+
+      - uses: behindgate/deploy-action@v1
+        id: preview
+        with:
+          path: dist
+          site-url: https://docs.example.com/preview/pr-${{ github.event.number }}
+          create-app: true
+
+      - run: echo "Preview at ${{ steps.preview.outputs.url }}"
+
+  teardown:
+    if: github.event.action == 'closed'
+    runs-on: ubuntu-latest
+    permissions:
+      contents: read
+      id-token: write
+    steps:
+      - uses: behindgate/deploy-action@v1
+        with:
+          site-url: https://docs.example.com/preview/pr-${{ github.event.number }}
+          delete-app: true
+```
+
+The teardown job needs no checkout and no `path`: it uploads nothing. Deleting a
+path with no app there succeeds, so the job is safe to re-run — and to run on a
+pull request that never got a preview.
+
+Give the trust "create apps" and "delete apps" over the site, or the two flags
+fail with an exit 2 naming the missing permission.
+
+**`site-url` is not the deploy endpoint.** They are different values and both
+appear in this example's job log: `site-url` is where the release is *served*,
+the endpoint (`url`) is the API it is *uploaded to*. Setting one to the other's
+value does not work.
+
+Without `create-app`, deploying to a path that has no app is an error rather than
+a silent creation — a mistyped path cannot quietly become a new app nobody ever
+looks at.
+
+**Needs bg-deploy 2026.8.5**, which is where `--site-url`, `--create-app` and
+`--delete-app` arrived. The pinned default tracks the production download host
+and moves through [`cli-update.yml`](.github/workflows/cli-update.yml); on an
+older CLI these inputs fail with an unknown-flag error. See
+[Which CLI version you get](#which-cli-version-you-get).
 
 ## How the CLI is verified
 
@@ -173,6 +256,12 @@ routinely will leave you on a client the server has moved past.
 **Minimum CLI version 2026.8.0.** This Action reads the CLI's `--json` output,
 which earlier releases do not have.
 
+**The preview inputs need 2026.8.5.** `site-url`, `create-app` and `delete-app`
+are passed straight through to CLI flags that arrived in that release, so on an
+older CLI they fail as unknown flags. The pinned default follows the production
+download host, which at the time of writing serves 2026.8.4 — these inputs start
+working when the scheduled bump lands, with no change to your workflow.
+
 Signing the releases would remove this machinery entirely — the Action could
 verify a signature at runtime and always take the current build. That is the
 highest-leverage item in
@@ -197,10 +286,12 @@ The CLI's two failure modes are reported differently, because they need
 different fixes:
 
 - **exit 2 (configuration)** — the request was rejected before deploying: a
-  missing or malformed token, a bad path, or a `url` that disagrees with the
-  endpoint the token was minted for. Since this Action validates the token
-  format and the path itself before invoking the CLI, an exit 2 with `url` set
-  is most often that endpoint mismatch, and the failure message says so.
+  missing or malformed token, a bad path, or a pinned endpoint that disagrees
+  with the one the token was minted for. Since this Action validates the token
+  format and the path itself before invoking the CLI, an exit 2 with a token is
+  most often that endpoint mismatch, and the failure message says so. Without a
+  token the message points at the CI trust instead, which is what decides what
+  the job may do.
 - **exit 1 (runtime)** — the deploy itself failed: the endpoint rejected the
   release, the runner could not reach it, or the upload was interrupted. Often
   transient and worth retrying.
@@ -214,6 +305,17 @@ which is what makes the distinction usable.
 The token is masked in the log via `::add-mask::` before anything else runs, and
 is passed to the CLI through the environment — never on the command line, so it
 cannot appear in a process listing or in the step's command echo.
+
+When no `token` is set, `BEHINDGATE_TOKEN` is *removed* from the CLI's
+environment rather than left to inherit. The CLI picks its credential mode from
+that variable, so one set elsewhere in the workflow would otherwise silently
+override what your inputs asked for.
+
+An unset secret interpolates to an empty string rather than failing the workflow,
+which now selects the CI-job credential instead of failing outright. The Action
+catches that: with no token and no OIDC token available to the job, it fails
+naming both causes — the missing `id-token: write` permission, and the secret
+that may simply not be set.
 
 ## Supported runners
 
@@ -250,9 +352,11 @@ protocol — so they stay thin and cannot drift apart in what a deploy does. Wha
 each *can* share depends on where it runs:
 
 - The Action runs Node on the runner, so it reuses [`src/core/`](src/core/) —
-  platform resolution, the checksum table, verification, output parsing,
-  exit-code mapping — with **no `@actions/*` imports** and no dependencies beyond
-  Node builtins. Only [`src/index.js`](src/index.js) touches the Actions toolkit.
+  platform resolution, the version/checksum table, checksum verification, output
+  parsing, exit-code mapping, the environment table, and the input rules that
+  turn a set of inputs into a CLI invocation — with **no `@actions/*` imports**
+  and no dependencies beyond Node builtins. Only [`src/index.js`](src/index.js)
+  touches the Actions toolkit.
 - The component is YAML merged into *your* pipeline, and this repository is never
   checked out on a GitLab runner. It therefore cannot call into `src/core/` at
   all, and is POSIX shell with the checksum table inlined. That inlining is
@@ -281,10 +385,22 @@ forks. They assert, among other things, that the uploaded zip has `index.html`
 at its root and nothing nested under the source folder name — the failure that
 would otherwise produce a broken site from a green deploy.
 
+[`test/integration/preview.test.js`](test/integration/preview.test.js) covers the
+preview flow the same way, with a second local server standing in for the Actions
+token service so the CLI can authenticate as the job. It skips itself on a CLI
+older than 2026.8.5, detected from `--help` rather than from a version string.
+
 To target a non-production environment:
 
 ```bash
 BG_DOWNLOAD_BASE_URL=https://app.test.behindgate.net npm run test:integration
+```
+
+To run against a build that has no pin yet — a release published to the test
+environment ahead of production, which has no checksum in `versions.json`:
+
+```bash
+BG_CLI_BINARY=/path/to/bg-deploy npm run test:integration
 ```
 
 Pull request titles must be conventional commits — releases and the changelog

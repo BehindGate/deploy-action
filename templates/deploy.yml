@@ -208,9 +208,9 @@ spec:
       echo "--- BehindGate deploy: acquiring the CLI"
 
       # >>> BEGIN generated from versions.json by script/build-gitlab-template.js
-      BG_DEFAULT_VERSION='2026.8.3'
+      BG_DEFAULT_VERSION='2026.8.4'
       BG_DEFAULT_BASE_URL='https://app.behindgate.com'
-      BG_PINNED_VERSIONS='2026.8.3'
+      BG_PINNED_VERSIONS='2026.8.3 2026.8.4'
 
       # Prints "<archive> <binary> <sha256>" for a version/platform pair.
       bg_pin() {
@@ -219,6 +219,10 @@ spec:
           '2026.8.3/linux-arm64') printf '%s %s %s\n' 'bg-deploy-linux-arm64.tar.gz' 'bg-deploy' 'abd3a018d81649ed2644d622e7389cdb86803d25c6c5d547f7028f80c4dc1770' ;;
           '2026.8.3/darwin-amd64') printf '%s %s %s\n' 'bg-deploy-darwin-amd64.tar.gz' 'bg-deploy' '5c71f18d4ce06bc29023ed4ebfc6dd42b717c663961ffeea18f3b6f81b9e9cbc' ;;
           '2026.8.3/darwin-arm64') printf '%s %s %s\n' 'bg-deploy-darwin-arm64.tar.gz' 'bg-deploy' '4a9f7907019d7e2cd2bfe734e31c70022efe1f0236935a2e941983ec071e10d8' ;;
+          '2026.8.4/linux-amd64') printf '%s %s %s\n' 'bg-deploy-linux-amd64.tar.gz' 'bg-deploy' '4db567f9a40b6965722cbe431a67a83e129b68dd1cbfc7a4e247bf6264a27c56' ;;
+          '2026.8.4/linux-arm64') printf '%s %s %s\n' 'bg-deploy-linux-arm64.tar.gz' 'bg-deploy' '585668505f54dbec29a3039070656b969257dd484bf1b2fafdeee4ec8c450068' ;;
+          '2026.8.4/darwin-amd64') printf '%s %s %s\n' 'bg-deploy-darwin-amd64.tar.gz' 'bg-deploy' 'e07076953f12eeec676d1a1d60bc4a226357826de233c8a1104b9c5d289315fb' ;;
+          '2026.8.4/darwin-arm64') printf '%s %s %s\n' 'bg-deploy-darwin-arm64.tar.gz' 'bg-deploy' '100e5eae8496efddadec2b24776f0552143e641a870ce1b3cd323a846490f2b3' ;;
           *) return 1 ;;
         esac
       }
