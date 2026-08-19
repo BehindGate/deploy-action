@@ -151,13 +151,20 @@ function isUrlSafeVersion(version) {
 }
 
 /**
- * The version as a URL path segment: checked, then encoded.
+ * The version as a URL path segment: matched against the pattern, then encoded.
+ *
+ * What is returned is the MATCH rather than the argument. The two are the same
+ * string, and taking it from the match is what makes the guarantee local: the
+ * value that goes into a URL provably came from the pattern above, with no
+ * reliance on a caller having checked anything first.
  *
  * @throws {UnsafeVersionError}
  */
 function versionSegment(version) {
-  if (!isUrlSafeVersion(version)) throw new UnsafeVersionError(version);
-  return encodeURIComponent(String(version));
+  const matched = URL_SAFE_VERSION.exec(String(version ?? ''));
+  if (!matched) throw new UnsafeVersionError(version);
+
+  return encodeURIComponent(matched[0]);
 }
 
 /**
