@@ -119,6 +119,22 @@ function semverSafeVersion(version) {
 }
 
 /**
+ * Drop any trailing slashes from a base URL.
+ *
+ * A loop rather than `replace(/\/+$/, '')`: the regex form backtracks, so its
+ * runtime grows super-linearly with a long run of slashes, and these base URLs
+ * come from a workflow input. The result is identical and the cost is not.
+ */
+function withoutTrailingSlash(value) {
+  const text = String(value);
+
+  let end = text.length;
+  while (end > 0 && text.charAt(end - 1) === '/') end -= 1;
+
+  return text.slice(0, end);
+}
+
+/**
  * Build the download URL for an archive.
  *
  * Versioned and immutable: `/downloads/<version>/<archive>`. Until 2026.8.x the
@@ -132,19 +148,17 @@ function semverSafeVersion(version) {
  * the same host), so hardcoding one would break every non-production user.
  */
 function downloadUrl(baseUrl, version, archive) {
-  const trimmed = String(baseUrl).replace(/\/+$/, '');
-  return `${trimmed}/downloads/${version}/${archive}`;
+  return `${withoutTrailingSlash(baseUrl)}/downloads/${version}/${archive}`;
 }
 
 /** URL of the published release index (`{latest, versions: [...]}`). */
 function indexUrl(baseUrl) {
-  return `${String(baseUrl).replace(/\/+$/, '')}/downloads/index.json`;
+  return `${withoutTrailingSlash(baseUrl)}/downloads/index.json`;
 }
 
 /** URL of the checksum manifest a host serves beside one version's archives. */
 function checksumsUrl(baseUrl, version) {
-  const trimmed = String(baseUrl).replace(/\/+$/, '');
-  return `${trimmed}/downloads/${version}/SHA256SUMS.txt`;
+  return `${withoutTrailingSlash(baseUrl)}/downloads/${version}/SHA256SUMS.txt`;
 }
 
 /**
@@ -181,6 +195,7 @@ module.exports = {
   artifactNames,
   semverSafeVersion,
   cacheKey,
+  withoutTrailingSlash,
   downloadUrl,
   indexUrl,
   checksumsUrl,

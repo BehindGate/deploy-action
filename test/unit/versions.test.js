@@ -201,6 +201,26 @@ describe('downloadUrl', () => {
     );
   });
 
+  test('every builder tolerates a run of trailing slashes', () => {
+    // Stripped by a loop rather than by `\/+$`, whose backtracking is
+    // super-linear in the number of slashes -- on a value that comes from a
+    // workflow input.
+    assert.equal(
+      versions.withoutTrailingSlash('https://app.behindgate.com////'),
+      'https://app.behindgate.com'
+    );
+    assert.equal(versions.withoutTrailingSlash('https://app.behindgate.com'), 'https://app.behindgate.com');
+    assert.equal(versions.withoutTrailingSlash('///'), '');
+    assert.equal(
+      versions.downloadUrl('https://app.behindgate.com///', '2026.8.3', 'x.tar.gz'),
+      'https://app.behindgate.com/downloads/2026.8.3/x.tar.gz'
+    );
+    assert.equal(
+      versions.checksumsUrl('https://app.test.behindgate.net//', '2026.8.5'),
+      'https://app.test.behindgate.net/downloads/2026.8.5/SHA256SUMS.txt'
+    );
+  });
+
   test('checksumsUrl points at the manifest beside that version', () => {
     assert.equal(
       versions.checksumsUrl('https://app.test.behindgate.net/', '2026.8.5'),
