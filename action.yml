@@ -79,9 +79,11 @@ inputs:
       overridden.
 
       Note this is the DEPLOY ENDPOINT, not the address your site is served on
-      (that is `site-url`), and it carries the `/api/deploy` path.
+      (that is `site-url`), and it names the releases collection rather than the
+      host: the CLI posts to this URL to create a release and derives the routes
+      beside it from the segment above.
 
-      Example: https://app.behindgate.com/api/deploy
+      Example: https://app.behindgate.com/api/deploy/releases
     required: false
     default: ''
 

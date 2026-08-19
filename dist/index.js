@@ -28296,10 +28296,13 @@ module.exports = {
  * the host the CLI itself is downloaded from. They are not the same URL and one
  * is not derivable from the other by string surgery, so both are spelled out.
  *
- * The deploy endpoint carries the `/api/deploy` path. The bare host is served by
- * a CDN that answers a POST with 403 text/html, and the CLI sends the request to
- * `--url` exactly as given rather than appending a path, so a host on its own is
- * not a usable endpoint.
+ * The deploy endpoint is the RELEASES collection, `/api/deploy/releases`. The
+ * CLI posts to `--url` exactly as given to create a release and appends the
+ * release id to poll it, and it derives the sibling routes by trimming that last
+ * segment -- `/api/deploy/oidc/token` for the credential exchange, `/api/deploy/apps`
+ * to resolve `--site-url`, `/api/deploy/publish` to publish. Naming the parent
+ * instead puts release creation on the wrong route, and the bare host is worse
+ * still: it is fronted by a CDN that answers a POST with 403 text/html.
  *
  * Downloads, by contrast, hang off the bare host: `<host>/downloads/<version>/`.
  *
@@ -28326,13 +28329,13 @@ class UnknownEnvironmentError extends Error {
 const ENVIRONMENTS = Object.freeze({
   prod: Object.freeze({
     name: 'prod',
-    deployUrl: 'https://app.behindgate.com/api/deploy',
+    deployUrl: 'https://app.behindgate.com/api/deploy/releases',
     downloadBaseUrl: 'https://app.behindgate.com',
     pinnedCli: true,
   }),
   test: Object.freeze({
     name: 'test',
-    deployUrl: 'https://app.test.behindgate.net/api/deploy',
+    deployUrl: 'https://app.test.behindgate.net/api/deploy/releases',
     downloadBaseUrl: 'https://app.test.behindgate.net',
     pinnedCli: false,
   }),
@@ -28944,7 +28947,7 @@ module.exports = {
  * Reference stdout from a successful run (bg-deploy 2026.8.3):
  *
  *   {"releaseId":"rel_01J8ZQ","url":"https://demo.behindgate.com/my-app/",
- *    "endpoint":"https://app.behindgate.com/api/deploy","status":"published",
+ *    "endpoint":"https://app.behindgate.com/api/deploy/releases","status":"published",
  *    "version":"2026.8.3"}
  */
 
