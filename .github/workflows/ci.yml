@@ -86,6 +86,80 @@ jobs:
       # the wrong hash, and nothing at deploy time would notice.
       - run: npm run build:gitlab -- --check
 
+  pipe:
+    name: The Bitbucket Pipe image builds and runs
+    runs-on: ubuntu-latest
+    steps:
+      - uses: actions/checkout@v4
+
+      # The image is the Pipe: everything the entrypoint does is covered by the
+      # test suite, but nothing else proves the Dockerfile assembles or that the
+      # baked archive lands where the entrypoint looks for it.
+      - name: Build the image
+        run: docker build -t behindgate/deploy-pipe:ci .
+
+      # With no variables set the entrypoint must fail on the token before it
+      # touches anything else. A container that starts, finds its own baked CLI
+      # and reports the real problem is the whole smoke test.
+      - name: Refuse to run without a token
+        run: |
+          set -euo pipefail
+
+          if output=$(docker run --rm behindgate/deploy-pipe:ci 2>&1); then
+            echo "::error::The pipe exited 0 with no configuration at all."
+            exit 1
+          fi
+
+          echo "$output"
+          if ! grep -q "BEHINDGATE_TOKEN is empty" <<<"$output"; then
+            echo "::error::Expected the empty-token message; got the output above."
+            exit 1
+          fi
+
+      - name: The pinned archive is baked into the image
+        run: |
+          set -euo pipefail
+          version=$(node -p "require('./versions.json').defaultVersion")
+          docker run --rm --entrypoint ls behindgate/deploy-pipe:ci \
+            "/opt/bg-deploy/$version/bg-deploy-linux-amd64.tar.gz"
+
+      # The pipe never writes to the checkout, which is what lets it drop
+      # privileges. If a future change reintroduces a write, it will want root
+      # back -- so assert the user here rather than only in the Dockerfile.
+      - name: The container is unprivileged
+        run: |
+          set -euo pipefail
+          user=$(docker run --rm --entrypoint id behindgate/deploy-pipe:ci -un)
+          echo "container user: $user"
+          if [ "$user" = "root" ]; then
+            echo "::error::The pipe image runs as root. It reads the checkout and writes nothing, so it must not."
+            exit 1
+          fi
+
+      # A read-only mount is the strongest statement of the contract: if the
+      # pipe writes anywhere under the build directory, this fails.
+      - name: It deploys with the checkout mounted read-only
+        run: |
+          set -euo pipefail
+
+          mkdir -p /tmp/clone/dist
+          echo '<h1>hi</h1>' > /tmp/clone/dist/index.html
+          chmod -R a+rX /tmp/clone
+
+          # No token, so it stops at the preflight check -- but only after it has
+          # chdir'd into the read-only mount, which is the part under test.
+          output=$(docker run --rm \
+            -v /tmp/clone:/build:ro \
+            -e BITBUCKET_CLONE_DIR=/build \
+            -e DEPLOY_PATH=dist \
+            behindgate/deploy-pipe:ci 2>&1 || true)
+
+          echo "$output"
+          if ! grep -q "BEHINDGATE_TOKEN is empty" <<<"$output"; then
+            echo "::error::Expected the empty-token message from a read-only mount; got the output above."
+            exit 1
+          fi
+
   checksums:
     name: versions.json matches the published artifacts
     runs-on: ubuntu-latest

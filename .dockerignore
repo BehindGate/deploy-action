@@ -1,0 +1,13 @@
+# Only what the Pipe needs at run time is copied in the Dockerfile; this keeps
+# the build context small and stops local state leaking into the image.
+node_modules/
+dist/
+test/
+e2e/
+docs/
+templates/
+.git/
+.github/
+.gitlab-ci.yml
+coverage/
+*.log

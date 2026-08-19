@@ -25,6 +25,7 @@ const { startCaptureServer, fakeJwt } = require('../helpers/capture-server');
 const { startDownloadServer } = require('../helpers/download-server');
 const { acquireRealCli, makeSiteFixture } = require('../helpers/cli');
 const { listZipEntries } = require('../helpers/zip');
+const { classifyToken } = require('../../src/core/validate');
 
 const SCRIPT = path.join(__dirname, '..', '..', 'src', 'gitlab', 'deploy.sh');
 
@@ -314,26 +315,17 @@ describe('the GitLab component fails early on bad configuration', () => {
     if (skipReason) return t.skip(skipReason);
 
     // The component is shell running in someone else's pipeline, so it cannot
-    // import the Action's check and reimplements it. That is exactly the kind of
-    // duplicate that drifts, and a token one wrapper accepts while another
-    // rejects is a bug in one of them. The corpus below is the rule stated
-    // explicitly: three non-empty base64url segments.
+    // import classifyToken and reimplements it. That is exactly the kind of
+    // duplicate that drifts -- a token one wrapper accepts while another rejects
+    // is a bug in one of them -- so the shell's verdict is compared against the
+    // shared check rather than against a second hand-written expectation.
     //
     // The token check runs before the path check, so a token the shell accepts
     // gets as far as complaining about the path.
-    const corpus = [
-      ['a.b.c', true],
-      ['aaa.bbb.', true],
-      ['A-Z_a-z.0-9.sig', true],
-      ['x.y', false],
-      ['a.b.c.d', false],
-      ['a b.c.d', false],
-      ['a.b.c!', false],
-      ['.b.c', false],
-      ['a..c', false],
-    ];
+    const corpus = ['a.b.c', 'aaa.bbb.', 'A-Z_a-z.0-9.sig', 'x.y', 'a.b.c.d', 'a b.c.d', 'a.b.c!', '.b.c', 'a..c'];
 
-    for (const [value, accepted] of corpus) {
+    for (const value of corpus) {
+      const accepted = classifyToken(value).code === 'ok';
       const result = await runComponent(makeWorkspace(), {
         BEHINDGATE_TOKEN: value,
         BG_PATH: 'no-such-dir',
@@ -343,7 +335,7 @@ describe('the GitLab component fails early on bad configuration', () => {
       assert.equal(
         rejected,
         !accepted,
-        `the shell verdict on ${JSON.stringify(value)} does not match the documented rule`
+        `the shell and classifyToken disagree about ${JSON.stringify(value)}`
       );
       assert.ok(!result.output.includes(value), 'the token value must never be echoed');
     }

@@ -22,6 +22,7 @@ const versions = require('./core/versions');
 const { verifyFileChecksum } = require('./core/checksum');
 const { parseDeployJson, parseErrorMessage } = require('./core/parse');
 const { describeExitCode, EXIT_SUCCESS } = require('./core/errors');
+const { classifyToken, TOKEN_EMPTY, TOKEN_MALFORMED } = require('./core/validate');
 
 const TOOL_NAME = 'bg-deploy';
 
@@ -83,9 +84,9 @@ async function acquireCli({ version, platform, baseUrl }) {
  * workflow, so this is by far the most common way the step goes wrong.
  */
 function validateToken(rawToken) {
-  const token = rawToken.trim();
+  const { code, token } = classifyToken(rawToken);
 
-  if (!token) {
+  if (code === TOKEN_EMPTY) {
     throw new Error(
       [
         'The `token` input is empty.',
@@ -101,18 +102,11 @@ function validateToken(rawToken) {
     );
   }
 
-  // bg-deploy exits 1 with "error: not a JWT" for this, which is the same exit
-  // code as a network failure or a rejected release. Checking here separates a
-  // malformed secret from a genuine deploy failure. The token itself is never
-  // included in the message.
-  const segments = token.split('.');
-  const looksLikeJwt =
-    segments.length === 3 &&
-    segments[0].length > 0 &&
-    segments[1].length > 0 &&
-    segments.every((segment) => /^[A-Za-z0-9_-]*$/.test(segment));
-
-  if (!looksLikeJwt) {
+  // The shape check lives in src/core/validate.js so the Action, the GitLab
+  // component and the Bitbucket Pipe cannot disagree about what a well-formed
+  // token is. Only the wording below is specific to Actions. The token itself
+  // is never included in the message.
+  if (code === TOKEN_MALFORMED) {
     throw new Error(
       [
         'The `token` input is not a well-formed JWT.',
