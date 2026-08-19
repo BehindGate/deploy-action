@@ -44,6 +44,13 @@ before(async () => {
     return;
   }
 
+  // BG_CLI_BINARY hands over a binary directly, bypassing the pinned download
+  // these tests exist to exercise -- there is no archive to serve locally.
+  if (!cli.archivePath) {
+    skipReason = 'BG_CLI_BINARY is set, so there is no pinned archive to serve';
+    return;
+  }
+
   // A throw in here is reported as cancelled subtests rather than as a failure,
   // which hides the reason completely. Turn it into a skip that names it.
   try {
@@ -349,17 +356,54 @@ describe('the GitLab component fails early on bad configuration', () => {
     }
   }, { timeout: 60000 });
 
-  test('an unpinned endpoint warns about what the job is trusting', async (t) => {
+  test('an unrecognised env is refused before anything is downloaded', async (t) => {
     if (skipReason) return t.skip(skipReason);
 
-    // No BG_URL, so the endpoint comes from the token's own claim. The deploy
-    // itself then fails against a claim pointing nowhere -- the warning is what
-    // is under test, and it has to appear before that failure.
-    const result = await runComponent(makeWorkspace(), {
-      BEHINDGATE_TOKEN: fakeJwt({ url: 'http://127.0.0.1:1/deploy' }),
-    });
+    const before = downloads.requests.length;
+    const result = await runComponent(makeWorkspace(), { BG_ENV: 'staging' });
 
-    assert.match(result.stderr, /no `url` input set/);
-    assert.match(result.stderr, /credential and a routing instruction/);
+    assert.notEqual(result.code, 0);
+    assert.match(result.stderr, /Unknown `env` input "staging"/);
+    assert.match(result.stderr, /prod test/);
+    assert.equal(downloads.requests.length, before, 'nothing may be fetched for an unknown env');
+  }, { timeout: 60000 });
+
+  test('`url` wins over the endpoint `env` resolves', async (t) => {
+    if (skipReason) return t.skip(skipReason);
+
+    // An explicit endpoint must never be replaced by one derived from a
+    // shorthand. env: test would send this to app.test.behindgate.net; the
+    // upload landing on the capture server is the proof that it did not.
+    const capture = await startCaptureServer();
+
+    try {
+      const result = await runComponent(makeWorkspace(), {
+        BG_ENV: 'test',
+        BG_URL: capture.url,
+      });
+
+      assert.equal(result.code, 0, `component failed:\n${result.output}`);
+      assert.equal(capture.uploads.length, 1);
+    } finally {
+      await capture.close();
+    }
+  }, { timeout: 120000 });
+
+  test('an environment that republishes builds says so', async (t) => {
+    if (skipReason) return t.skip(skipReason);
+
+    const capture = await startCaptureServer();
+
+    try {
+      const result = await runComponent(makeWorkspace(), {
+        BG_ENV: 'test',
+        BG_URL: capture.url,
+      });
+
+      assert.match(result.stderr, /republishes CLI builds under the same version/);
+      assert.match(result.stderr, /failure here means the build was replaced/);
+    } finally {
+      await capture.close();
+    }
   }, { timeout: 120000 });
 });

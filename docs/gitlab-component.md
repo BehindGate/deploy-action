@@ -19,9 +19,6 @@ include:
   - component: $CI_SERVER_FQDN/behindgate/deploy-action/deploy@v1
     inputs:
       path: dist
-      # Pin the endpoint rather than trusting the token's own claim.
-      # See "Why you should pin url".
-      url: https://app.behindgate.com/api/deploy
 
 build:
   stage: build
@@ -75,7 +72,6 @@ include:
   - remote: https://raw.githubusercontent.com/behindgate/deploy-action/v1/templates/deploy.yml
     inputs:
       path: dist
-      url: https://app.behindgate.com/api/deploy
 ```
 
 Pin a tag or a commit SHA, never a branch. A remote include is fetched fresh on
@@ -88,9 +84,10 @@ exists to solve, one level up.
 | Input | Required | Default | Description |
 | --- | --- | --- | --- |
 | `path` | yes | — | Folder to deploy, or an existing `.zip` to upload as-is. |
-| `url` | no | — | Pin the deploy endpoint. **Strongly recommended** — see below. |
+| `env` | no | `prod` | Environment to deploy to: `prod` or `test`. Selects the deploy endpoint **and** the CLI download host together. |
+| `url` | no | from `env` | Override the deploy endpoint. Only for an endpoint `env` does not name. |
 | `cli-version` | no | `defaultVersion` from [`versions.json`](../versions.json) | Escape hatch to hold a specific `bg-deploy` version after a bad release. Normally leave unset. |
-| `download-base-url` | no | `https://app.behindgate.com` | Host to download the CLI from. Override only for non-production environments. |
+| `download-base-url` | no | from `env` | Override the CLI download host. Only for a host `env` does not name. |
 | `stage` | no | `deploy` | Stage the job runs in. |
 | `image` | no | `alpine:3.22` | Image the job runs in. Needs a POSIX shell, `tar`, `mktemp`, and `curl` or `wget`. |
 
@@ -189,35 +186,37 @@ level, and job variables take precedence over project and group variables, so a
 project variable named `BG_URL` cannot silently redirect a pinned deploy. Only an
 edit to this file can — which is the point. Prefer the literal anyway; see below.
 
-## Why you should pin `url`
+## Choosing the environment
 
-A BehindGate deploy token is not only a credential. It is *also* a routing
-instruction: the endpoint the CLI uploads to is a claim inside the token itself.
+`env` selects the two addresses that have to agree — the deploy endpoint and the
+host the CLI is downloaded from. They are not the same URL and neither derives
+from the other, so both come from one table generated from
+[`src/core/environments.js`](../src/core/environments.js), the same file the
+Action reads. An unrecognised value is refused rather than falling back to a
+default and deploying somewhere you did not ask for.
 
-That means anyone who can change your `BEHINDGATE_TOKEN` variable can point your
-builds at a host they control — and **nothing in the job looks wrong**. The
-upload succeeds, the CLI prints `✓ Deployed`, the job exits `0`, and the pipeline
-goes green. Your real site simply stops receiving updates while your build output
-goes somewhere else.
-
-Setting `url` removes that, in two ways. The destination lives in
-`.gitlab-ci.yml`, where code review and protected branches cover it rather than
-project settings a single compromised account can rewrite — and since CLI
-2026.8.0, a token whose own claim disagrees with your pinned `url` is **refused
-outright** rather than silently overridden.
-
-**Finding your endpoint.** Run the job once *without* `url`. The CLI reports the
-endpoint it used on its first line:
-
-```
-Deploying to https://app.behindgate.com/api/deploy
+```yaml
+include:
+  - component: $CI_SERVER_FQDN/behindgate/deploy-action/deploy@v1
+    inputs:
+      path: dist
+      env: prod        # the default; `test` is the other
 ```
 
-Never put the endpoint in a *masked* variable. It is not sensitive, and storing
-it beside the token means one compromised store controls both the credential and
-the destination — which looks like pinning while providing none of its benefit.
+`url` and `download-base-url` still win where you set them — an explicit value is
+never replaced by one derived from a shorthand — but you should not normally need
+either.
 
-If you omit `url`, the job emits a warning explaining what it is trusting.
+**The endpoint is the releases collection**, `/api/deploy/releases`. The CLI
+posts there to create a release and derives its sibling routes by trimming that
+last segment, so naming the parent puts release creation on the wrong route, and
+the bare host is fronted by a CDN that answers a POST with `403 text/html`.
+
+**`env: test` republishes.** Production publishes a version once, so a committed
+checksum describes it for good; the test environment rebuilds under the same
+version number, so a pin there describes what it served when the pin was
+captured. The job says so, and a checksum failure against it means the build was
+replaced rather than that anything is wrong.
 
 ## How the CLI is verified
 

@@ -112,7 +112,7 @@ point of the paragraph above.
 exchanges the OIDC token GitHub mints for the run for a deploy token that lives
 fifteen minutes, so the repository stores no long-lived secret at all.
 
-That needs three things:
+That needs two things:
 
 - `permissions: id-token: write` on the job, which is what mints the OIDC token;
 - a CI trust for this repository in the workspace, under **Settings → CI trusts**.
@@ -336,8 +336,11 @@ include:
   - component: $CI_SERVER_FQDN/behindgate/deploy-action/deploy@v1
     inputs:
       path: dist
-      url: https://app.behindgate.com/api/deploy
 ```
+
+`env` selects the deploy endpoint and the CLI download host together, from the
+same [`src/core/environments.js`](src/core/environments.js) the Action reads —
+generated into the component, since it cannot require it at job time.
 
 The token arrives as a masked `BEHINDGATE_TOKEN` CI/CD variable rather than as
 an input, because component inputs are visible in the project's expanded

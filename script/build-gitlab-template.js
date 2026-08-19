@@ -10,6 +10,7 @@
  * Two things are generated:
  *
  *   versions.json          -> the pin table inside src/gitlab/deploy.sh
+ *   src/core/environments.js -> the environment table inside src/gitlab/deploy.sh
  *   src/gitlab/deploy.sh   -> the script body inside templates/deploy.yml
  *
  * WHY THE PINS ARE INLINED. A component is YAML that GitLab merges into the
@@ -29,6 +30,8 @@
 
 const fs = require('node:fs');
 const path = require('node:path');
+
+const environments = require('../src/core/environments');
 
 const ROOT = path.join(__dirname, '..');
 const TABLE_PATH = path.join(ROOT, 'versions.json');
@@ -67,6 +70,40 @@ function shellSafe(value, what) {
     );
   }
   return text;
+}
+
+/**
+ * The shell environment table.
+ *
+ * Generated from src/core/environments.js for the same reason the pins are
+ * generated from versions.json: the component cannot require either at job
+ * time, and two hand-maintained copies of an endpoint are two chances to send a
+ * deploy to the wrong one.
+ */
+function generateEnvironments(table = environments.ENVIRONMENTS) {
+  const cases = [];
+
+  for (const [name, environment] of Object.entries(table)) {
+    cases.push(
+      `    '${shellSafe(name, 'an environment name')}') printf '%s %s %s\\n' ` +
+        `'${shellSafe(environment.deployUrl, 'a deploy endpoint')}' ` +
+        `'${shellSafe(environment.downloadBaseUrl, 'a download host')}' ` +
+        `'${environment.pinnedCli ? 'pinned' : 'unpinned'}' ;;`
+    );
+  }
+
+  return [
+    `BG_DEFAULT_ENV='${shellSafe(environments.DEFAULT_ENVIRONMENT, 'the default environment')}'`,
+    `BG_KNOWN_ENVS='${Object.keys(table).map((n) => shellSafe(n, 'an environment name')).join(' ')}'`,
+    '',
+    '# Prints "<deploy-url> <download-base-url> <pinned|unpinned>" for an environment.',
+    'bg_env() {',
+    '  case "$1" in',
+    ...cases,
+    '    *) return 1 ;;',
+    '  esac',
+    '}',
+  ];
 }
 
 /** The shell pin table: a lookup from version/platform to archive, binary, digest. */
@@ -165,7 +202,7 @@ function build() {
   const script = splice(readText(SCRIPT_PATH), {
     begin: PINS_BEGIN,
     end: PINS_END,
-    lines: generatePins(table),
+    lines: [...generateEnvironments(), '', ...generatePins(table)],
     what: 'src/gitlab/deploy.sh',
   });
 
@@ -218,4 +255,12 @@ if (require.main === module) {
   main();
 }
 
-module.exports = { build, generatePins, splice, scriptBody, readText, PLATFORMS };
+module.exports = {
+  build,
+  generatePins,
+  generateEnvironments,
+  splice,
+  scriptBody,
+  readText,
+  PLATFORMS,
+};

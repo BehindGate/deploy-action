@@ -17,16 +17,26 @@ spec:
         not at the directory above it.
       type: string
 
+    env:
+      description: >-
+        The BehindGate environment to deploy to: prod (default) or test. It
+        selects both addresses that have to agree -- the deploy endpoint and the
+        host the CLI is downloaded from -- which are not the same URL and do not
+        derive from one another. An unrecognised value is refused rather than
+        falling back to a default and deploying somewhere you did not ask for.
+        `url` and `download-base-url` still win where they are set.
+      type: string
+      default: ''
+
     url:
       description: >-
-        Pin the deploy endpoint instead of trusting the endpoint claim inside
-        the token. Strongly recommended. A deploy token is simultaneously a
-        bearer credential and a routing instruction, so anyone able to change
-        BEHINDGATE_TOKEN can point the upload at a host they control while the
-        job still succeeds. Pinning here puts the destination in a file that
-        code review and protected branches cover, and since CLI 2026.8.0 a
-        token whose own claim disagrees with this value is refused outright.
-        Example: https://app.behindgate.com/api/deploy
+        Override the deploy endpoint that `env` resolves to. Needed only for a
+        local or development endpoint; `env` covers the published ones. This is
+        the RELEASES collection, not its parent -- the CLI posts here to create
+        a release and derives its sibling routes by trimming the last segment,
+        so naming the parent puts release creation on the wrong route and the
+        bare host is fronted by a CDN that answers a POST with 403 text/html.
+        Example: https://app.behindgate.com/api/deploy/releases
       type: string
       default: ''
 
@@ -44,11 +54,11 @@ spec:
 
     download-base-url:
       description: >-
-        The host to download the CLI from. Archives are fetched from
-        <download-base-url>/downloads/<version>/<archive>. BehindGate serves
-        downloads from a different host per environment, so this cannot be
-        hardcoded. Override it only when you target a non-production
-        environment; the pinned checksums must match whatever that host serves.
+        Override the host the CLI is downloaded from, which `env` also
+        resolves. Archives are fetched from
+        <download-base-url>/downloads/<version>/<archive>. Needed only for a
+        host `env` does not name; the pinned checksums must match whatever it
+        serves.
       type: string
       default: ''
 
@@ -83,6 +93,7 @@ spec:
     # Inputs reach the script as environment variables rather than being pasted
     # into its text. GitLab interpolates parsed YAML values, so a path or a URL
     # containing a quote cannot turn into shell syntax here.
+    BG_ENV: $[[ inputs.env ]]
     BG_PATH: $[[ inputs.path ]]
     BG_URL: $[[ inputs.url ]]
     BG_CLI_VERSION: $[[ inputs.cli-version ]]
@@ -114,6 +125,7 @@ spec:
       #
       # Reads from the environment:
       #   BEHINDGATE_TOKEN      the deploy token, as a masked CI/CD variable
+      #   BG_ENV                the BehindGate environment, or empty for the default
       #   BG_PATH               the folder (or .zip) to deploy
       #   BG_URL                the pinned deploy endpoint, or empty
       #   BG_CLI_VERSION        a pinned CLI version, or empty for the default
@@ -197,17 +209,21 @@ spec:
           'job publishes it with `artifacts:paths:`.'
       fi
 
-      if [ -z "$BG_URL" ]; then
-        echo "WARNING: no \`url\` input set, so the deploy endpoint comes from the token itself." >&2
-        echo "WARNING: a token is both a credential and a routing instruction: anyone who can" >&2
-        echo "WARNING: change BEHINDGATE_TOKEN can redirect this upload while the job still" >&2
-        echo "WARNING: reports success. Pin the endpoint with \`url:\` and the CLI refuses to" >&2
-        echo "WARNING: deploy if a token turns up claiming a different one." >&2
-      fi
-
       echo "--- BehindGate deploy: acquiring the CLI"
 
       # >>> BEGIN generated from versions.json by script/build-gitlab-template.js
+      BG_DEFAULT_ENV='prod'
+      BG_KNOWN_ENVS='prod test'
+
+      # Prints "<deploy-url> <download-base-url> <pinned|unpinned>" for an environment.
+      bg_env() {
+        case "$1" in
+          'prod') printf '%s %s %s\n' 'https://app.behindgate.com/api/deploy/releases' 'https://app.behindgate.com' 'pinned' ;;
+          'test') printf '%s %s %s\n' 'https://app.test.behindgate.net/api/deploy/releases' 'https://app.test.behindgate.net' 'unpinned' ;;
+          *) return 1 ;;
+        esac
+      }
+
       BG_DEFAULT_VERSION='2026.8.4'
       BG_DEFAULT_BASE_URL='https://app.behindgate.com'
       BG_PINNED_VERSIONS='2026.8.3 2026.8.4'
@@ -228,11 +244,45 @@ spec:
       }
       # <<< END generated
 
+      # `env` selects both addresses that have to agree: the deploy endpoint and the
+      # host the CLI is downloaded from. They are not the same URL and neither derives
+      # from the other, so both come from the table above.
+      BG_ENV="${BG_ENV:-}"
+      [ -n "$BG_ENV" ] || BG_ENV="$BG_DEFAULT_ENV"
+
+      if ! bg_entry=$(bg_env "$BG_ENV"); then
+        bg_fail \
+          "Unknown \`env\` input \"$BG_ENV\"." \
+          "Valid values: $BG_KNOWN_ENVS." \
+          '' \
+          'The environment selects both the deploy endpoint and the host the CLI is' \
+          'downloaded from, so an unrecognised value is refused rather than falling' \
+          'back to a default and deploying somewhere you did not ask for.'
+      fi
+      BG_ENV_URL=$(printf '%s' "$bg_entry" | cut -d' ' -f1)
+      BG_ENV_BASE=$(printf '%s' "$bg_entry" | cut -d' ' -f2)
+      BG_ENV_PINNED=$(printf '%s' "$bg_entry" | cut -d' ' -f3)
+
+      # `url` and `download-base-url` win over `env`: an explicit value must never be
+      # quietly replaced by one derived from a shorthand.
+      [ -n "$BG_URL" ] || BG_URL="$BG_ENV_URL"
+
       BG_VERSION="${BG_CLI_VERSION:-}"
       [ -n "$BG_VERSION" ] || BG_VERSION="$BG_DEFAULT_VERSION"
       BG_BASE="${BG_DOWNLOAD_BASE_URL:-}"
-      [ -n "$BG_BASE" ] || BG_BASE="$BG_DEFAULT_BASE_URL"
+      [ -n "$BG_BASE" ] || BG_BASE="$BG_ENV_BASE"
       BG_BASE=$(printf '%s' "$BG_BASE" | sed 's:/*$::')
+
+      # Production publishes a version once, so a committed checksum describes it for
+      # good. Test republishes under the same version, so a pin there describes the
+      # build only until someone rebuilds it -- and the job then fails verification on
+      # bytes that are legitimate.
+      if [ "$BG_ENV_PINNED" = "unpinned" ]; then
+        echo "WARNING: the $BG_ENV environment republishes CLI builds under the same version," >&2
+        echo "WARNING: so the checksums pinned in this component describe what it served when" >&2
+        echo "WARNING: they were captured, not necessarily what it serves now. A checksum" >&2
+        echo "WARNING: failure here means the build was replaced, not that anything is wrong." >&2
+      fi
 
       # Anything outside the published set fails loudly rather than guessing at an
       # archive name that would 404 -- or worse, return 200 with an HTML error page,
