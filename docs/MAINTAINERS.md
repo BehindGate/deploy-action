@@ -157,8 +157,8 @@ to agree — the deploy endpoint and the host the CLI is downloaded from:
 
 | `env` | Deploy endpoint | CLI downloads |
 | --- | --- | --- |
-| `prod` (default) | `https://app.behindgate.com/api/deploy` | `https://app.behindgate.com` |
-| `test` | `https://app.test.behindgate.net/api/deploy` | `https://app.test.behindgate.net` |
+| `prod` (default) | `https://app.behindgate.com/api/deploy/releases` | `https://app.behindgate.com` |
+| `test` | `https://app.test.behindgate.net/api/deploy/releases` | `https://app.test.behindgate.net` |
 
 Anything else fails the step rather than falling back to the default, which would
 deploy to an environment nobody named. `url` and `download-base-url` each win

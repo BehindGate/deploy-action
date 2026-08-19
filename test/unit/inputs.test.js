@@ -26,27 +26,29 @@ describe('environments', () => {
   test('prod is the default and carries both URLs', () => {
     const resolved = resolveEnvironment('');
     assert.equal(resolved.name, 'prod');
-    assert.equal(resolved.deployUrl, 'https://app.behindgate.com/api/deploy');
+    assert.equal(resolved.deployUrl, 'https://app.behindgate.com/api/deploy/releases');
     assert.equal(resolved.downloadBaseUrl, 'https://app.behindgate.com');
   });
 
   test('test resolves to the test host, on .net', () => {
     const resolved = resolveEnvironment('test');
-    assert.equal(resolved.deployUrl, 'https://app.test.behindgate.net/api/deploy');
+    assert.equal(resolved.deployUrl, 'https://app.test.behindgate.net/api/deploy/releases');
     assert.equal(resolved.downloadBaseUrl, 'https://app.test.behindgate.net');
   });
 
-  test('the deploy endpoint is not the bare host', () => {
-    // The host on its own is fronted by a CDN that answers a POST with 403
-    // text/html, and the CLI sends its request to --url verbatim rather than
-    // appending a path. A bare host would fail every deploy.
+  test('the deploy endpoint names the releases collection, not the host', () => {
+    // The CLI posts to --url verbatim to create a release, so this has to be the
+    // releases collection: the parent would put creation on the wrong route, and
+    // the bare host is fronted by a CDN that answers a POST with 403 text/html.
+    // The sibling routes (oidc/token, apps, publish) come off the segment above,
+    // so they land on /api/deploy/... either way.
     for (const environment of Object.values(ENVIRONMENTS)) {
       assert.ok(
         environment.deployUrl.startsWith(`${environment.downloadBaseUrl}/`),
         `${environment.name}: the endpoint should live under its own host`
       );
       assert.notEqual(environment.deployUrl, environment.downloadBaseUrl);
-      assert.match(environment.deployUrl, /\/api\/deploy$/);
+      assert.match(environment.deployUrl, /\/api\/deploy\/releases$/);
     }
   });
 
@@ -138,20 +140,20 @@ describe('isKnownDownloadOrigin', () => {
 describe('env resolves both URLs', () => {
   test('env: test switches the endpoint and the download host together', () => {
     const resolved = inputs({ env: 'test' });
-    assert.equal(resolved.deployUrl, 'https://app.test.behindgate.net/api/deploy');
+    assert.equal(resolved.deployUrl, 'https://app.test.behindgate.net/api/deploy/releases');
     assert.equal(resolved.downloadBaseUrl, 'https://app.test.behindgate.net');
     assert.deepEqual(resolved.args, [
       '-y',
       '--json',
       '--url',
-      'https://app.test.behindgate.net/api/deploy',
+      'https://app.test.behindgate.net/api/deploy/releases',
       'dist',
     ]);
   });
 
   test('an unset env deploys to production', () => {
     const resolved = inputs();
-    assert.equal(resolved.deployUrl, 'https://app.behindgate.com/api/deploy');
+    assert.equal(resolved.deployUrl, 'https://app.behindgate.com/api/deploy/releases');
     assert.equal(resolved.downloadBaseUrl, 'https://app.behindgate.com');
     assert.equal(resolved.endpointSource, 'the prod default');
   });
@@ -167,7 +169,7 @@ describe('url and download-base-url win over env', () => {
     assert.equal(resolved.deployUrl, 'http://127.0.0.1:8080/api/deploy');
     assert.equal(resolved.endpointSource, 'the `url` input');
     assert.ok(resolved.args.includes('http://127.0.0.1:8080/api/deploy'));
-    assert.ok(!resolved.args.includes('https://app.test.behindgate.net/api/deploy'));
+    assert.ok(!resolved.args.includes('https://app.test.behindgate.net/api/deploy/releases'));
   });
 
   test('overriding the endpoint leaves the download host on the environment', () => {
@@ -180,15 +182,15 @@ describe('url and download-base-url win over env', () => {
   test('an explicit download-base-url overrides the environment host', () => {
     const resolved = inputs({ env: 'test', downloadBaseUrl: 'https://mirror.example.com' });
     assert.equal(resolved.downloadBaseUrl, 'https://mirror.example.com');
-    assert.equal(resolved.deployUrl, 'https://app.test.behindgate.net/api/deploy');
+    assert.equal(resolved.deployUrl, 'https://app.test.behindgate.net/api/deploy/releases');
   });
 
   test('a workflow written before env existed keeps its exact behaviour', () => {
     const resolved = inputs({
-      url: 'https://app.behindgate.com/api/deploy',
+      url: 'https://app.behindgate.com/api/deploy/releases',
       downloadBaseUrl: 'https://app.behindgate.com',
     });
-    assert.equal(resolved.deployUrl, 'https://app.behindgate.com/api/deploy');
+    assert.equal(resolved.deployUrl, 'https://app.behindgate.com/api/deploy/releases');
     assert.equal(resolved.downloadBaseUrl, 'https://app.behindgate.com');
   });
 });
@@ -253,7 +255,7 @@ describe('token and site-url are mutually exclusive', () => {
       '-y',
       '--json',
       '--url',
-      'https://app.behindgate.com/api/deploy',
+      'https://app.behindgate.com/api/deploy/releases',
       '--site-url',
       'https://docs.example.com/preview/pr-1',
       'dist',
@@ -270,7 +272,7 @@ describe('create-app and delete-app', () => {
       '-y',
       '--json',
       '--url',
-      'https://app.behindgate.com/api/deploy',
+      'https://app.behindgate.com/api/deploy/releases',
       '--site-url',
       'https://docs.example.com/preview/pr-42',
       '--create-app',
@@ -284,7 +286,7 @@ describe('create-app and delete-app', () => {
       '-y',
       '--json',
       '--url',
-      'https://app.test.behindgate.net/api/deploy',
+      'https://app.test.behindgate.net/api/deploy/releases',
       '--site-url',
       'https://docs.example.com/preview/pr-42',
       '--delete-app',

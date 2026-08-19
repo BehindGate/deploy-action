@@ -48,7 +48,7 @@ the site, so that `index.html` sits at the top of it.
 | `site-url` | no | — | What to deploy to, as the URL it serves on: the host names the site, the path names the app. Only with the CI-job credential; cannot be combined with `token`. |
 | `create-app` | no | `false` | Create the app named by `site-url` if it does not exist yet. |
 | `delete-app` | no | `false` | Delete the app named by `site-url` and exit without deploying. |
-| `url` | no | `https://app.behindgate.com/api/deploy` | Pin the deploy endpoint to an exact URL. For a local or dev endpoint — see [Why the endpoint is pinned](#why-the-endpoint-is-pinned). |
+| `url` | no | `https://app.behindgate.com/api/deploy/releases` | Pin the deploy endpoint to an exact URL. For a local or dev endpoint — see [Why the endpoint is pinned](#why-the-endpoint-is-pinned). |
 | `cli-version` | no | `defaultVersion` from [`versions.json`](versions.json) | Escape hatch to hold a specific `bg-deploy` version after a bad release. Normally leave unset — see [Which CLI version you get](#which-cli-version-you-get). |
 | `download-base-url` | no | `https://app.behindgate.com` | Host to download the CLI from. |
 
@@ -82,7 +82,7 @@ overridden. A swapped secret now fails the job instead of quietly succeeding
 somewhere else. Both behaviours are covered in
 [`test/integration/deploy.test.js`](test/integration/deploy.test.js).
 
-This is why the endpoint defaults to `https://app.behindgate.com/api/deploy`
+This is why the endpoint defaults to `https://app.behindgate.com/api/deploy/releases`
 rather than to "whatever the token says": the safe destination is the one that
 does not move when a secret does.
 
