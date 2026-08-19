@@ -186,10 +186,10 @@ terse description.
 carries a `pinnedCli` flag saying so, and it decides where the CLI's version and
 checksum come from:
 
-| | Version | Checksum | Verified against |
+| | Which build | Checksum | Verified against |
 | --- | --- | --- | --- |
 | `prod` | `defaultVersion`, or `cli-version` | `versions.json` | a hash committed here |
-| `test` | the host's `/downloads/index.json`, or `cli-version` | the host's `SHA256SUMS.txt` | a file the same host serves |
+| `test` | the host's unversioned `/downloads/`, or `cli-version` | the host's `SHA256SUMS.txt` | a file the same host serves |
 
 Test republishes builds under the same version string. On 2026-08-16 the
 `2026.8.5` linux-amd64 archive changed from `7d4250e0df0b` to `e566ce5c86a7`
@@ -203,8 +203,17 @@ more. That is why production does not use it, and why the run warns whenever
 this path is taken. It still catches the failure that actually happens on a
 republishing host -- a truncated or half-published archive.
 
-The tool cache is keyed on **version plus digest** (`2026.8.5-sha.e566ce5c86a7`)
-wherever the version is not pinned. A key of version alone would hand back the
+Without `cli-version`, both the archive and its manifest are read from the
+host's **unversioned** paths -- `/downloads/SHA256SUMS.txt` and
+`/downloads/<archive>` -- which is the only question worth asking a host that
+republishes: what are you serving now? It also means no URL is built from
+anything a remote document said, which is what the quality gate objected to when
+the version came from `/downloads/index.json`. Such a build has no version until
+the CLI reports its own in `--json` output, so it is identified by its digest,
+and the job log calls it `(current build e566ce5c86a7)`.
+
+The tool cache is keyed on **version plus digest** (`2026.8.5-sha.e566ce5c86a7`),
+or on the digest alone (`0.0.0-sha.e566ce5c86a7`) for a build with no version. A key of version alone would hand back the
 build that was replaced, and a cache hit is indistinguishable from a fast run.
 The digest rides in a semver *prerelease* segment on purpose: `semver.clean`,
 which the tool cache applies, keeps a prerelease and discards build metadata, so

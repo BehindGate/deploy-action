@@ -200,6 +200,23 @@ function downloadUrl(baseUrl, version, archive) {
   return `${withoutTrailingSlash(baseUrl)}/downloads/${versionSegment(version)}/${archive}`;
 }
 
+/**
+ * URL of the archive a host is serving RIGHT NOW, with no version in the path.
+ *
+ * The versioned paths above name a specific release. These name whatever the
+ * host currently publishes, which is the only thing an environment that
+ * republishes can be asked for -- and it takes no version, so nothing a remote
+ * document said can decide which URL is fetched.
+ */
+function currentDownloadUrl(baseUrl, archive) {
+  return `${withoutTrailingSlash(baseUrl)}/downloads/${archive}`;
+}
+
+/** URL of the checksum manifest for whatever the host is serving right now. */
+function currentChecksumsUrl(baseUrl) {
+  return `${withoutTrailingSlash(baseUrl)}/downloads/SHA256SUMS.txt`;
+}
+
 /** URL of the published release index (`{latest, versions: [...]}`). */
 function indexUrl(baseUrl) {
   return `${withoutTrailingSlash(baseUrl)}/downloads/index.json`;
@@ -226,11 +243,19 @@ function checksumsUrl(baseUrl, version) {
  * @returns {string|null} null when the version cannot be normalised, as before
  */
 function cacheKey(version, sha256) {
+  const digest = String(sha256 ?? '').trim().toLowerCase();
+  const identified = /^[0-9a-f]{12,}$/.test(digest);
+
+  // A build taken from the host's unversioned path has no version to key on --
+  // its identity IS its digest. `0.0.0` carries no claim about which release it
+  // is; the digest that follows is what distinguishes one build from the next.
+  if (version === null || version === undefined || version === '') {
+    return identified ? `0.0.0-sha.${digest.slice(0, 12)}` : null;
+  }
+
   const normalized = semverSafeVersion(version);
   if (!normalized) return null;
-
-  const digest = String(sha256 ?? '').trim().toLowerCase();
-  if (!/^[0-9a-f]{12,}$/.test(digest)) return normalized;
+  if (!identified) return normalized;
 
   return `${normalized}-sha.${digest.slice(0, 12)}`;
 }
@@ -249,8 +274,10 @@ module.exports = {
   versionSegment,
   UnsafeVersionError,
   downloadUrl,
+  currentDownloadUrl,
   indexUrl,
   checksumsUrl,
+  currentChecksumsUrl,
   UnknownVersionError,
   UnknownPlatformError,
 };

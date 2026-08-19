@@ -147,7 +147,8 @@ inputs:
 
       Where the CLI is not verified against versions.json (see the `env` input,
       which is internal), any version the download host serves is accepted, and
-      leaving this unset takes whichever that host reports as current.
+      leaving this unset takes whatever that host is serving now, identified by
+      its checksum rather than by a version number.
 
       Downloads are versioned and immutable
       (`/downloads/<version>/<archive>`), so this requests a specific published

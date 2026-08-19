@@ -28872,42 +28872,6 @@ function checksumFor(text, archive, { source } = {}) {
 }
 
 /**
- * The version the release index reports as current.
- *
- * @param {string|object} index the body of /downloads/index.json
- * @returns {string}
- */
-function latestVersion(index, { source } = {}) {
-  let parsed = index;
-
-  if (typeof parsed === 'string') {
-    try {
-      parsed = JSON.parse(parsed);
-    } catch {
-      parsed = null;
-    }
-  }
-
-  const latest = parsed && typeof parsed.latest === 'string' ? parsed.latest.trim() : '';
-
-  // The index is remote data that decides the path of the next request, so what
-  // it calls a version has to look like one before it is used as one.
-  if (latest && !versions.isUrlSafeVersion(latest)) {
-    throw new versions.UnsafeVersionError(latest);
-  }
-
-  if (!latest) {
-    throw new Error(
-      `The release index${at(source)} does not report a ` +
-        `"latest" version, so there is nothing to download. Pin one with ` +
-        `\`cli-version\` if the host's index is broken.`
-    );
-  }
-
-  return latest;
-}
-
-/**
  * Resolve, from the host itself, which build to download and the digest to hold
  * it to.
  *
@@ -28918,26 +28882,32 @@ function latestVersion(index, { source } = {}) {
  * @returns {Promise<{version: string, platform: string, archive: string, binary: string, sha256: string, verifiedAgainst: string}>}
  */
 async function resolveHostArtifact({ baseUrl, platform, version, fetchText }) {
-  const indexSource = versions.indexUrl(baseUrl);
-
-  // An explicit `cli-version` still wins here: the host's index only decides
-  // what "current" means, and a caller holding a version has already decided.
-  const resolvedVersion =
-    String(version ?? '').trim() ||
-    latestVersion(await fetchText(indexSource, 'release index'), { source: indexSource });
-
+  const requested = String(version ?? '').trim();
   const names = versions.artifactNames(platform);
-  const source = versions.checksumsUrl(baseUrl, resolvedVersion);
+
+  // Without a requested version, both URLs are the host's unversioned ones:
+  // "whatever you are serving now". That is the only question worth asking an
+  // environment that republishes, and it keeps every URL built from constants --
+  // no document the host serves gets to decide which URL is fetched next.
+  const source = requested
+    ? versions.checksumsUrl(baseUrl, requested)
+    : versions.currentChecksumsUrl(baseUrl);
+
   const sha256 = checksumFor(await fetchText(source, 'checksum manifest'), names.archive, {
     source,
   });
 
   return {
-    version: resolvedVersion,
+    // Null where the build is the host's current one: it has no version until
+    // the CLI reports its own, and the digest below is what identifies it.
+    version: requested || null,
     platform,
     archive: names.archive,
     binary: names.binary,
     sha256,
+    downloadUrl: requested
+      ? versions.downloadUrl(baseUrl, requested, names.archive)
+      : versions.currentDownloadUrl(baseUrl, names.archive),
     verifiedAgainst: source,
   };
 }
@@ -28945,7 +28915,6 @@ async function resolveHostArtifact({ baseUrl, platform, version, fetchText }) {
 module.exports = {
   parseChecksums,
   checksumFor,
-  latestVersion,
   resolveHostArtifact,
   MalformedChecksumsError,
   ChecksumNotListedError,
@@ -29372,6 +29341,23 @@ function downloadUrl(baseUrl, version, archive) {
   return `${withoutTrailingSlash(baseUrl)}/downloads/${versionSegment(version)}/${archive}`;
 }
 
+/**
+ * URL of the archive a host is serving RIGHT NOW, with no version in the path.
+ *
+ * The versioned paths above name a specific release. These name whatever the
+ * host currently publishes, which is the only thing an environment that
+ * republishes can be asked for -- and it takes no version, so nothing a remote
+ * document said can decide which URL is fetched.
+ */
+function currentDownloadUrl(baseUrl, archive) {
+  return `${withoutTrailingSlash(baseUrl)}/downloads/${archive}`;
+}
+
+/** URL of the checksum manifest for whatever the host is serving right now. */
+function currentChecksumsUrl(baseUrl) {
+  return `${withoutTrailingSlash(baseUrl)}/downloads/SHA256SUMS.txt`;
+}
+
 /** URL of the published release index (`{latest, versions: [...]}`). */
 function indexUrl(baseUrl) {
   return `${withoutTrailingSlash(baseUrl)}/downloads/index.json`;
@@ -29398,11 +29384,19 @@ function checksumsUrl(baseUrl, version) {
  * @returns {string|null} null when the version cannot be normalised, as before
  */
 function cacheKey(version, sha256) {
+  const digest = String(sha256 ?? '').trim().toLowerCase();
+  const identified = /^[0-9a-f]{12,}$/.test(digest);
+
+  // A build taken from the host's unversioned path has no version to key on --
+  // its identity IS its digest. `0.0.0` carries no claim about which release it
+  // is; the digest that follows is what distinguishes one build from the next.
+  if (version === null || version === undefined || version === '') {
+    return identified ? `0.0.0-sha.${digest.slice(0, 12)}` : null;
+  }
+
   const normalized = semverSafeVersion(version);
   if (!normalized) return null;
-
-  const digest = String(sha256 ?? '').trim().toLowerCase();
-  if (!/^[0-9a-f]{12,}$/.test(digest)) return normalized;
+  if (!identified) return normalized;
 
   return `${normalized}-sha.${digest.slice(0, 12)}`;
 }
@@ -29421,8 +29415,10 @@ module.exports = {
   versionSegment,
   UnsafeVersionError,
   downloadUrl,
+  currentDownloadUrl,
   indexUrl,
   checksumsUrl,
+  currentChecksumsUrl,
   UnknownVersionError,
   UnknownPlatformError,
 };
@@ -29515,8 +29511,9 @@ async function fetchText(url, what) {
  *
  * HOST-SERVED (test). Test republishes builds, so a committed digest describes
  * one for about as long as it takes to rebuild it, and a version newer than
- * anything committed has no entry at all. The version comes from the host's
- * release index and the digest from the SHA256SUMS.txt beside the archive.
+ * anything committed has no entry at all. Both the archive and its digest come
+ * from the host's unversioned paths -- "whatever you are serving now" -- so the
+ * build is identified by that digest rather than by a version number.
  *
  * That is a weaker check and it is labelled as one wherever it is used: a
  * manifest served by the host it describes cannot detect a host serving a
@@ -29526,8 +29523,13 @@ async function fetchText(url, what) {
  */
 async function resolveArtifact({ version, platform, baseUrl, pinned }) {
   if (pinned) {
-    const artifact = versions.resolveArtifact(version || versions.defaultVersion(), platform);
-    return { ...artifact, verifiedAgainst: 'versions.json' };
+    const resolved = version || versions.defaultVersion();
+    const artifact = versions.resolveArtifact(resolved, platform);
+    return {
+      ...artifact,
+      downloadUrl: versions.downloadUrl(baseUrl, resolved, artifact.archive),
+      verifiedAgainst: 'versions.json',
+    };
   }
 
   return manifest.resolveHostArtifact({ baseUrl, platform, version, fetchText });
@@ -29543,33 +29545,36 @@ async function acquireCli({ version, platform, baseUrl, pinned = true }) {
   const artifact = await resolveArtifact({ version, platform, baseUrl, pinned });
   const resolvedVersion = artifact.version;
 
+  // The host's current build has no version until the CLI reports its own, so
+  // the digest stands in for one everywhere a human reads it.
+  const label = resolvedVersion || `(current build ${artifact.sha256.slice(0, 12)})`;
+
   // The tool cache keys on semver, and the vendor's version strings are not
   // valid semver (`2026.07.1`). Store and look up under a normalised value, or
   // the lookup silently misses and every run re-downloads the CLI.
   //
-  // Where the version is not pinned, the digest joins the key: the host can
-  // republish a version, and a cache keyed on the version alone would keep
-  // serving the build it replaced.
+  // Where the build is not pinned, the digest joins the key -- or replaces it
+  // outright for a build taken from the unversioned path. A key that ignored the
+  // digest would keep serving the build the host has since replaced.
   const cacheVersion = pinned
     ? versions.semverSafeVersion(resolvedVersion)
     : versions.cacheKey(resolvedVersion, artifact.sha256);
 
   const cached = cacheVersion ? tc.find(TOOL_NAME, cacheVersion, platform) : '';
   if (cached) {
-    core.info(`Using cached bg-deploy ${resolvedVersion} (${platform}) from ${cached}`);
+    core.info(`Using cached bg-deploy ${label} (${platform}) from ${cached}`);
     return {
       binary: path.join(cached, artifact.binary),
-      version: resolvedVersion,
+      version: label,
       verifiedAgainst: artifact.verifiedAgainst,
     };
   }
 
-  const url = versions.downloadUrl(baseUrl, resolvedVersion, artifact.archive);
-  core.info(`Downloading bg-deploy ${resolvedVersion} (${platform}) from ${url}`);
+  core.info(`Downloading bg-deploy ${label} (${platform}) from ${artifact.downloadUrl}`);
 
-  const archivePath = await tc.downloadTool(url);
+  const archivePath = await tc.downloadTool(artifact.downloadUrl);
 
-  await verifyFileChecksum(archivePath, artifact.sha256, { source: url });
+  await verifyFileChecksum(archivePath, artifact.sha256, { source: artifact.downloadUrl });
   core.info(`Checksum verified against ${artifact.verifiedAgainst}: ${artifact.sha256}`);
 
   const extractedDir = artifact.archive.endsWith('.zip')
@@ -29581,8 +29586,8 @@ async function acquireCli({ version, platform, baseUrl, pinned = true }) {
     installDir = await tc.cacheDir(extractedDir, TOOL_NAME, cacheVersion, platform);
   } else {
     core.warning(
-      `bg-deploy version "${resolvedVersion}" cannot be normalised to semver, so ` +
-        `it cannot be cached and will be downloaded again on every run.`
+      `bg-deploy ${label} cannot be given a cache key, so it will be downloaded ` +
+        `again on every run.`
     );
   }
 
@@ -29592,7 +29597,7 @@ async function acquireCli({ version, platform, baseUrl, pinned = true }) {
     fs.chmodSync(binary, 0o755);
   }
 
-  return { binary, version: resolvedVersion, verifiedAgainst: artifact.verifiedAgainst };
+  return { binary, version: label, verifiedAgainst: artifact.verifiedAgainst };
 }
 
 /**

@@ -71,9 +71,17 @@ function startDownloadHost() {
       res.end(body);
     };
 
-    if (req.url === '/downloads/index.json') {
-      const latest = [...builds.keys()].pop();
-      return send(200, 'application/json', JSON.stringify({ latest, versions: [] }));
+    // What the host is serving now, at paths with no version in them.
+    if (req.url === '/downloads/SHA256SUMS.txt') {
+      const current = [...builds.values()].pop();
+      if (!current) return send(404, 'text/plain', 'nothing published');
+      return send(200, 'text/plain', `${current.sha256}  ${ARCHIVE}\n`);
+    }
+
+    if (req.url === `/downloads/${ARCHIVE}`) {
+      const current = [...builds.values()].pop();
+      if (!current) return send(404, 'text/plain', 'nothing published');
+      return send(200, 'application/gzip', current.bytes);
     }
 
     const manifest = /^\/downloads\/([^/]+)\/SHA256SUMS\.txt$/.exec(req.url);
@@ -112,7 +120,7 @@ async function fetchText(url, what) {
 
 /** Download and verify exactly as the Action does, into a throwaway file. */
 async function downloadAndVerify(host, artifact) {
-  const url = `${host.url}/downloads/${artifact.version}/${artifact.archive}`;
+  const url = artifact.downloadUrl;
   const response = await fetch(url);
   const file = path.join(fs.mkdtempSync(path.join(root, 'dl-')), artifact.archive);
   fs.writeFileSync(file, Buffer.from(await response.arrayBuffer()));
@@ -133,7 +141,7 @@ describe('acquiring an unpinned CLI from the host', () => {
     if (host) await host.close();
   });
 
-  test('resolves the current version and verifies against the host manifest', async (t) => {
+  test('resolves the current build and verifies against the host manifest', async (t) => {
     if (skipReason) return t.skip(skipReason);
     const build = makeArchive('first');
     if (!build) return t.skip('no tar(1) available to build the fixture');
@@ -146,9 +154,10 @@ describe('acquiring an unpinned CLI from the host', () => {
       fetchText,
     });
 
-    assert.equal(artifact.version, '2026.8.5');
+    assert.equal(artifact.version, null, 'the current build is named by its digest');
     assert.equal(artifact.sha256, build.sha256);
-    assert.equal(artifact.verifiedAgainst, `${host.url}/downloads/2026.8.5/SHA256SUMS.txt`);
+    assert.equal(artifact.verifiedAgainst, `${host.url}/downloads/SHA256SUMS.txt`);
+    assert.equal(artifact.downloadUrl, `${host.url}/downloads/${ARCHIVE}`);
 
     await downloadAndVerify(host, artifact);
   });
@@ -166,13 +175,13 @@ describe('acquiring an unpinned CLI from the host', () => {
     host.publish('2026.8.5', second);
     const after = await resolveHostArtifact({ baseUrl: host.url, platform: PLATFORM, fetchText });
 
-    assert.equal(before.version, after.version, 'the version string is unchanged');
+    assert.equal(before.downloadUrl, after.downloadUrl, 'the URL is unchanged');
     assert.notEqual(before.sha256, after.sha256, 'the bytes moved');
 
     const beforeKey = cacheKey(before.version, before.sha256);
     const afterKey = cacheKey(after.version, after.sha256);
-    assert.notEqual(beforeKey, afterKey, 'a version-only key would reuse the replaced build');
-    assert.match(afterKey, /^2026\.8\.5-sha\.[0-9a-f]{12}$/);
+    assert.notEqual(beforeKey, afterKey, 'a URL-only key would reuse the replaced build');
+    assert.match(afterKey, /^0\.0\.0-sha\.[0-9a-f]{12}$/);
 
     // And the new bytes verify against the new manifest, not the old digest.
     await downloadAndVerify(host, after);
@@ -209,7 +218,9 @@ describe('acquiring an unpinned CLI from the host', () => {
 
   test('a version the host does not serve fails on its missing manifest', async (t) => {
     if (skipReason) return t.skip(skipReason);
-    host.publish('2026.8.5', makeArchive('first') || { sha256: 'x', bytes: Buffer.alloc(0) });
+    const build = makeArchive('first');
+    if (!build) return t.skip('no tar(1) available to build the fixture');
+    host.publish('2026.8.5', build);
 
     await assert.rejects(
       () =>

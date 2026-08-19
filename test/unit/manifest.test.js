@@ -6,7 +6,6 @@ const assert = require('node:assert/strict');
 const {
   parseChecksums,
   checksumFor,
-  latestVersion,
   resolveHostArtifact,
   MalformedChecksumsError,
   ChecksumNotListedError,
@@ -77,26 +76,6 @@ describe('checksumFor', () => {
   });
 });
 
-describe('latestVersion', () => {
-  test('reads the version the host calls current', () => {
-    assert.equal(latestVersion('{"latest":"2026.8.5","versions":[]}'), '2026.8.5');
-    assert.equal(latestVersion({ latest: '2026.8.5' }), '2026.8.5');
-  });
-
-  test('a latest that is not version-shaped is refused', () => {
-    // The value steers the path of the next request; a traversal or a query
-    // string in it would fetch something nobody named.
-    assert.throws(() => latestVersion('{"latest":"../../elsewhere"}'), /not a usable bg-deploy version/);
-    assert.throws(() => latestVersion('{"latest":"2026.8.5?x=1"}'), /not a usable bg-deploy version/);
-  });
-
-  test('an index with no latest is an error rather than an empty version', () => {
-    // An empty version would build /downloads//bg-deploy-... and 404 later.
-    assert.throws(() => latestVersion('{"versions":[]}'), /does not report a "latest"/);
-    assert.throws(() => latestVersion('not json'), /does not report a "latest"/);
-  });
-});
-
 describe('resolveHostArtifact', () => {
   /** Stand-in for the host: records what was asked for, answers from a table. */
   function fetcher(documents) {
@@ -111,10 +90,9 @@ describe('resolveHostArtifact', () => {
 
   const BASE = 'https://app.test.behindgate.net';
 
-  test('takes the version from the index and the digest from that version manifest', async () => {
+  test('asks the host for what it serves now, from unversioned paths', async () => {
     const { fetchText, asked } = fetcher({
-      [`${BASE}/downloads/index.json`]: '{"latest":"2026.8.5"}',
-      [`${BASE}/downloads/2026.8.5/SHA256SUMS.txt`]: MANIFEST,
+      [`${BASE}/downloads/SHA256SUMS.txt`]: MANIFEST,
     });
 
     const artifact = await resolveHostArtifact({
@@ -124,20 +102,23 @@ describe('resolveHostArtifact', () => {
     });
 
     assert.deepEqual(artifact, {
-      version: '2026.8.5',
+      // No version: the build is identified by its digest until the CLI itself
+      // reports one.
+      version: null,
       platform: 'linux-amd64',
       archive: 'bg-deploy-linux-amd64.tar.gz',
       binary: 'bg-deploy',
       sha256: 'e566ce5c86a774830e01501582c98540eef19a1f41d77416901761976b57b4b6',
-      verifiedAgainst: `${BASE}/downloads/2026.8.5/SHA256SUMS.txt`,
+      downloadUrl: `${BASE}/downloads/bg-deploy-linux-amd64.tar.gz`,
+      verifiedAgainst: `${BASE}/downloads/SHA256SUMS.txt`,
     });
-    assert.deepEqual(asked, [
-      `${BASE}/downloads/index.json`,
-      `${BASE}/downloads/2026.8.5/SHA256SUMS.txt`,
-    ]);
+
+    // One document, at a URL built entirely from constants: nothing the host
+    // says decides which URL is fetched next.
+    assert.deepEqual(asked, [`${BASE}/downloads/SHA256SUMS.txt`]);
   });
 
-  test('an explicit version wins, and the index is not even consulted', async () => {
+  test('an explicit version switches both URLs to that version', async () => {
     const { fetchText, asked } = fetcher({
       [`${BASE}/downloads/2026.8.4/SHA256SUMS.txt`]: MANIFEST,
     });
@@ -152,20 +133,33 @@ describe('resolveHostArtifact', () => {
     assert.equal(artifact.version, '2026.8.4');
     assert.equal(artifact.binary, 'bg-deploy.exe');
     assert.equal(artifact.archive, 'bg-deploy-windows-amd64.zip');
+    assert.equal(artifact.downloadUrl, `${BASE}/downloads/2026.8.4/bg-deploy-windows-amd64.zip`);
     assert.deepEqual(asked, [`${BASE}/downloads/2026.8.4/SHA256SUMS.txt`]);
   });
 
+  test('a version that could change the path is refused', async () => {
+    const { fetchText } = fetcher({});
+
+    await assert.rejects(
+      () =>
+        resolveHostArtifact({
+          baseUrl: BASE,
+          platform: 'linux-amd64',
+          version: '../../elsewhere',
+          fetchText,
+        }),
+      /not a usable bg-deploy version/
+    );
+  });
+
   test('a republished build resolves to a different digest, and nothing else changes', async () => {
-    // The whole reason this path exists: the version string stays put while the
-    // bytes behind it move.
+    // The whole reason this path exists: the URL stays put while the bytes
+    // behind it move.
     const rebuilt = MANIFEST.replace(
       'e566ce5c86a774830e01501582c98540eef19a1f41d77416901761976b57b4b6',
       'f'.repeat(64)
     );
-    const { fetchText } = fetcher({
-      [`${BASE}/downloads/index.json`]: '{"latest":"2026.8.5"}',
-      [`${BASE}/downloads/2026.8.5/SHA256SUMS.txt`]: rebuilt,
-    });
+    const { fetchText } = fetcher({ [`${BASE}/downloads/SHA256SUMS.txt`]: rebuilt });
 
     const artifact = await resolveHostArtifact({
       baseUrl: BASE,
@@ -173,7 +167,6 @@ describe('resolveHostArtifact', () => {
       fetchText,
     });
 
-    assert.equal(artifact.version, '2026.8.5');
     assert.equal(artifact.sha256, 'f'.repeat(64));
   });
 });

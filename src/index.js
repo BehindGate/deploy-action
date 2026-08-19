@@ -79,8 +79,9 @@ async function fetchText(url, what) {
  *
  * HOST-SERVED (test). Test republishes builds, so a committed digest describes
  * one for about as long as it takes to rebuild it, and a version newer than
- * anything committed has no entry at all. The version comes from the host's
- * release index and the digest from the SHA256SUMS.txt beside the archive.
+ * anything committed has no entry at all. Both the archive and its digest come
+ * from the host's unversioned paths -- "whatever you are serving now" -- so the
+ * build is identified by that digest rather than by a version number.
  *
  * That is a weaker check and it is labelled as one wherever it is used: a
  * manifest served by the host it describes cannot detect a host serving a
@@ -90,8 +91,13 @@ async function fetchText(url, what) {
  */
 async function resolveArtifact({ version, platform, baseUrl, pinned }) {
   if (pinned) {
-    const artifact = versions.resolveArtifact(version || versions.defaultVersion(), platform);
-    return { ...artifact, verifiedAgainst: 'versions.json' };
+    const resolved = version || versions.defaultVersion();
+    const artifact = versions.resolveArtifact(resolved, platform);
+    return {
+      ...artifact,
+      downloadUrl: versions.downloadUrl(baseUrl, resolved, artifact.archive),
+      verifiedAgainst: 'versions.json',
+    };
   }
 
   return manifest.resolveHostArtifact({ baseUrl, platform, version, fetchText });
@@ -107,33 +113,36 @@ async function acquireCli({ version, platform, baseUrl, pinned = true }) {
   const artifact = await resolveArtifact({ version, platform, baseUrl, pinned });
   const resolvedVersion = artifact.version;
 
+  // The host's current build has no version until the CLI reports its own, so
+  // the digest stands in for one everywhere a human reads it.
+  const label = resolvedVersion || `(current build ${artifact.sha256.slice(0, 12)})`;
+
   // The tool cache keys on semver, and the vendor's version strings are not
   // valid semver (`2026.07.1`). Store and look up under a normalised value, or
   // the lookup silently misses and every run re-downloads the CLI.
   //
-  // Where the version is not pinned, the digest joins the key: the host can
-  // republish a version, and a cache keyed on the version alone would keep
-  // serving the build it replaced.
+  // Where the build is not pinned, the digest joins the key -- or replaces it
+  // outright for a build taken from the unversioned path. A key that ignored the
+  // digest would keep serving the build the host has since replaced.
   const cacheVersion = pinned
     ? versions.semverSafeVersion(resolvedVersion)
     : versions.cacheKey(resolvedVersion, artifact.sha256);
 
   const cached = cacheVersion ? tc.find(TOOL_NAME, cacheVersion, platform) : '';
   if (cached) {
-    core.info(`Using cached bg-deploy ${resolvedVersion} (${platform}) from ${cached}`);
+    core.info(`Using cached bg-deploy ${label} (${platform}) from ${cached}`);
     return {
       binary: path.join(cached, artifact.binary),
-      version: resolvedVersion,
+      version: label,
       verifiedAgainst: artifact.verifiedAgainst,
     };
   }
 
-  const url = versions.downloadUrl(baseUrl, resolvedVersion, artifact.archive);
-  core.info(`Downloading bg-deploy ${resolvedVersion} (${platform}) from ${url}`);
+  core.info(`Downloading bg-deploy ${label} (${platform}) from ${artifact.downloadUrl}`);
 
-  const archivePath = await tc.downloadTool(url);
+  const archivePath = await tc.downloadTool(artifact.downloadUrl);
 
-  await verifyFileChecksum(archivePath, artifact.sha256, { source: url });
+  await verifyFileChecksum(archivePath, artifact.sha256, { source: artifact.downloadUrl });
   core.info(`Checksum verified against ${artifact.verifiedAgainst}: ${artifact.sha256}`);
 
   const extractedDir = artifact.archive.endsWith('.zip')
@@ -145,8 +154,8 @@ async function acquireCli({ version, platform, baseUrl, pinned = true }) {
     installDir = await tc.cacheDir(extractedDir, TOOL_NAME, cacheVersion, platform);
   } else {
     core.warning(
-      `bg-deploy version "${resolvedVersion}" cannot be normalised to semver, so ` +
-        `it cannot be cached and will be downloaded again on every run.`
+      `bg-deploy ${label} cannot be given a cache key, so it will be downloaded ` +
+        `again on every run.`
     );
   }
 
@@ -156,7 +165,7 @@ async function acquireCli({ version, platform, baseUrl, pinned = true }) {
     fs.chmodSync(binary, 0o755);
   }
 
-  return { binary, version: resolvedVersion, verifiedAgainst: artifact.verifiedAgainst };
+  return { binary, version: label, verifiedAgainst: artifact.verifiedAgainst };
 }
 
 /**

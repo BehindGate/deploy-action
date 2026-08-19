@@ -121,6 +121,14 @@ describe('cacheKey', () => {
     assert.equal(versions.cacheKey('2026.07.1', 'c'.repeat(64)), '2026.7.1-sha.cccccccccccc');
   });
 
+  test('a build with no version is keyed on its digest alone', () => {
+    // What the host serves at its unversioned path has no version until the CLI
+    // reports one, so the digest is the whole identity.
+    assert.equal(versions.cacheKey(null, 'e'.repeat(64)), '0.0.0-sha.eeeeeeeeeeee');
+    assert.equal(versions.cacheKey('', 'e'.repeat(64)), '0.0.0-sha.eeeeeeeeeeee');
+    assert.equal(versions.cacheKey(null, ''), null, 'nothing identifies it at all');
+  });
+
   test('falls back to the bare version when no usable digest is given', () => {
     assert.equal(versions.cacheKey('2026.8.5', ''), '2026.8.5');
     assert.equal(versions.cacheKey('2026.8.5', 'not-a-digest'), '2026.8.5');
@@ -243,6 +251,17 @@ describe('downloadUrl', () => {
     for (const version of ['2026.8.5', '2026.07.1-rc.1', '1.2.3_4~5']) {
       assert.equal(versions.versionSegment(version), version);
     }
+  });
+
+  test('the unversioned builders name what the host serves now', () => {
+    assert.equal(
+      versions.currentChecksumsUrl('https://app.test.behindgate.net/'),
+      'https://app.test.behindgate.net/downloads/SHA256SUMS.txt'
+    );
+    assert.equal(
+      versions.currentDownloadUrl('https://app.test.behindgate.net', 'bg-deploy-linux-amd64.tar.gz'),
+      'https://app.test.behindgate.net/downloads/bg-deploy-linux-amd64.tar.gz'
+    );
   });
 
   test('checksumsUrl points at the manifest beside that version', () => {

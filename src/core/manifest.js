@@ -93,42 +93,6 @@ function checksumFor(text, archive, { source } = {}) {
 }
 
 /**
- * The version the release index reports as current.
- *
- * @param {string|object} index the body of /downloads/index.json
- * @returns {string}
- */
-function latestVersion(index, { source } = {}) {
-  let parsed = index;
-
-  if (typeof parsed === 'string') {
-    try {
-      parsed = JSON.parse(parsed);
-    } catch {
-      parsed = null;
-    }
-  }
-
-  const latest = parsed && typeof parsed.latest === 'string' ? parsed.latest.trim() : '';
-
-  // The index is remote data that decides the path of the next request, so what
-  // it calls a version has to look like one before it is used as one.
-  if (latest && !versions.isUrlSafeVersion(latest)) {
-    throw new versions.UnsafeVersionError(latest);
-  }
-
-  if (!latest) {
-    throw new Error(
-      `The release index${at(source)} does not report a ` +
-        `"latest" version, so there is nothing to download. Pin one with ` +
-        `\`cli-version\` if the host's index is broken.`
-    );
-  }
-
-  return latest;
-}
-
-/**
  * Resolve, from the host itself, which build to download and the digest to hold
  * it to.
  *
@@ -139,26 +103,32 @@ function latestVersion(index, { source } = {}) {
  * @returns {Promise<{version: string, platform: string, archive: string, binary: string, sha256: string, verifiedAgainst: string}>}
  */
 async function resolveHostArtifact({ baseUrl, platform, version, fetchText }) {
-  const indexSource = versions.indexUrl(baseUrl);
-
-  // An explicit `cli-version` still wins here: the host's index only decides
-  // what "current" means, and a caller holding a version has already decided.
-  const resolvedVersion =
-    String(version ?? '').trim() ||
-    latestVersion(await fetchText(indexSource, 'release index'), { source: indexSource });
-
+  const requested = String(version ?? '').trim();
   const names = versions.artifactNames(platform);
-  const source = versions.checksumsUrl(baseUrl, resolvedVersion);
+
+  // Without a requested version, both URLs are the host's unversioned ones:
+  // "whatever you are serving now". That is the only question worth asking an
+  // environment that republishes, and it keeps every URL built from constants --
+  // no document the host serves gets to decide which URL is fetched next.
+  const source = requested
+    ? versions.checksumsUrl(baseUrl, requested)
+    : versions.currentChecksumsUrl(baseUrl);
+
   const sha256 = checksumFor(await fetchText(source, 'checksum manifest'), names.archive, {
     source,
   });
 
   return {
-    version: resolvedVersion,
+    // Null where the build is the host's current one: it has no version until
+    // the CLI reports its own, and the digest below is what identifies it.
+    version: requested || null,
     platform,
     archive: names.archive,
     binary: names.binary,
     sha256,
+    downloadUrl: requested
+      ? versions.downloadUrl(baseUrl, requested, names.archive)
+      : versions.currentDownloadUrl(baseUrl, names.archive),
     verifiedAgainst: source,
   };
 }
@@ -166,7 +136,6 @@ async function resolveHostArtifact({ baseUrl, platform, version, fetchText }) {
 module.exports = {
   parseChecksums,
   checksumFor,
-  latestVersion,
   resolveHostArtifact,
   MalformedChecksumsError,
   ChecksumNotListedError,
