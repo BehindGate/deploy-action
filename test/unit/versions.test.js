@@ -3,6 +3,13 @@
 const { test, describe } = require('node:test');
 const assert = require('node:assert/strict');
 
+// The semver the tool cache itself resolves, not whatever else is installed:
+// what matters is how THAT copy treats the key, since it is the one that decides
+// where a cached build lands.
+const semver = require(
+  require.resolve('semver', { paths: [require.resolve('@actions/tool-cache')] })
+);
+
 const versions = require('../../src/core/versions');
 const { SUPPORTED } = require('../../src/core/platform');
 
@@ -54,6 +61,81 @@ describe('versions table', () => {
       () => versions.resolveArtifact(versions.defaultVersion(), 'plan9-amd64'),
       versions.UnknownPlatformError
     );
+  });
+});
+
+describe('artifactNames', () => {
+  // The pin table carries these names per version; this derives them for a
+  // version the table has never seen, which is the only way the test host's
+  // newer builds can be fetched at all.
+  test('matches every name the pin table records', () => {
+    for (const version of versions.knownVersions()) {
+      for (const platform of SUPPORTED) {
+        const pinned = versions.resolveArtifact(version, platform);
+        assert.deepEqual(
+          versions.artifactNames(platform),
+          { archive: pinned.archive, binary: pinned.binary },
+          `${version} ${platform}: the convention has drifted from the table`
+        );
+      }
+    }
+  });
+
+  test('windows gets a .zip and an .exe', () => {
+    assert.deepEqual(versions.artifactNames('windows-arm64'), {
+      archive: 'bg-deploy-windows-arm64.zip',
+      binary: 'bg-deploy.exe',
+    });
+  });
+});
+
+describe('cacheKey', () => {
+  // A version alone identifies a build only where a version is published once.
+  // The test host republishes, so the digest has to be part of the key or the
+  // cache serves the build that was replaced.
+  test('carries the digest alongside the version', () => {
+    assert.equal(
+      versions.cacheKey('2026.8.5', 'e566ce5c86a774830e01501582c98540eef19a1f41d77416901761976b57b4b6'),
+      '2026.8.5-sha.e566ce5c86a7'
+    );
+  });
+
+  test('a republished build gets a different key', () => {
+    const before = versions.cacheKey('2026.8.5', 'a'.repeat(64));
+    const after = versions.cacheKey('2026.8.5', 'b'.repeat(64));
+    assert.notEqual(before, after);
+  });
+
+  test('the digest survives semver normalisation, which build metadata does not', () => {
+    // The tool cache runs whatever it is given through semver.clean, and that
+    // DISCARDS build metadata (`2026.8.5+sha.abc` -> `2026.8.5`) while keeping a
+    // prerelease. A key using `+` would collide with the plain version and hand
+    // back the previous build, which is the whole failure being avoided.
+    const key = versions.cacheKey('2026.8.5', 'a'.repeat(64));
+    assert.ok(!key.includes('+'), 'the digest must not ride in build metadata');
+    assert.equal(semver.clean(key), key, 'semver.clean must keep the digest');
+    assert.notEqual(semver.clean(key), '2026.8.5');
+  });
+
+  test('normalises the vendor version the same way the pinned path does', () => {
+    assert.equal(versions.cacheKey('2026.07.1', 'c'.repeat(64)), '2026.7.1-sha.cccccccccccc');
+  });
+
+  test('a build with no version is keyed on its digest alone', () => {
+    // What the host serves at its unversioned path has no version until the CLI
+    // reports one, so the digest is the whole identity.
+    assert.equal(versions.cacheKey(null, 'e'.repeat(64)), '0.0.0-sha.eeeeeeeeeeee');
+    assert.equal(versions.cacheKey('', 'e'.repeat(64)), '0.0.0-sha.eeeeeeeeeeee');
+    assert.equal(versions.cacheKey(null, ''), null, 'nothing identifies it at all');
+  });
+
+  test('falls back to the bare version when no usable digest is given', () => {
+    assert.equal(versions.cacheKey('2026.8.5', ''), '2026.8.5');
+    assert.equal(versions.cacheKey('2026.8.5', 'not-a-digest'), '2026.8.5');
+  });
+
+  test('stays null for a version that cannot be normalised', () => {
+    assert.equal(versions.cacheKey('nightly', 'a'.repeat(64)), null);
   });
 });
 
@@ -124,6 +206,68 @@ describe('downloadUrl', () => {
     assert.equal(
       versions.indexUrl('https://app.behindgate.com/'),
       'https://app.behindgate.com/downloads/index.json'
+    );
+  });
+
+  test('every builder tolerates a run of trailing slashes', () => {
+    // Stripped by a loop rather than by `\/+$`, whose backtracking is
+    // super-linear in the number of slashes -- on a value that comes from a
+    // workflow input.
+    assert.equal(
+      versions.withoutTrailingSlash('https://app.behindgate.com////'),
+      'https://app.behindgate.com'
+    );
+    assert.equal(versions.withoutTrailingSlash('https://app.behindgate.com'), 'https://app.behindgate.com');
+    assert.equal(versions.withoutTrailingSlash('///'), '');
+    assert.equal(
+      versions.downloadUrl('https://app.behindgate.com///', '2026.8.3', 'x.tar.gz'),
+      'https://app.behindgate.com/downloads/2026.8.3/x.tar.gz'
+    );
+    assert.equal(
+      versions.checksumsUrl('https://app.test.behindgate.net//', '2026.8.5'),
+      'https://app.test.behindgate.net/downloads/2026.8.5/SHA256SUMS.txt'
+    );
+  });
+
+  test('a version that could change the path is refused, not escaped', () => {
+    // On an unpinned environment the version comes from the host's own index,
+    // so it is remote data deciding which path the next request fetches.
+    for (const version of ['../../elsewhere', 'a/b', '2026.8.5?x=1', '2026.8.5#f', '', ' ']) {
+      assert.throws(
+        () => versions.checksumsUrl('https://app.test.behindgate.net', version),
+        versions.UnsafeVersionError,
+        JSON.stringify(version)
+      );
+      assert.throws(
+        () => versions.downloadUrl('https://app.test.behindgate.net', version, 'x.tar.gz'),
+        versions.UnsafeVersionError
+      );
+    }
+  });
+
+  test('a real version passes through encoding unchanged', () => {
+    // The accepted character set is one percent-encoding leaves alone, so the
+    // check and the encoding cannot disagree about what the segment is.
+    for (const version of ['2026.8.5', '2026.07.1-rc.1', '1.2.3_4~5']) {
+      assert.equal(versions.versionSegment(version), version);
+    }
+  });
+
+  test('the unversioned builders name what the host serves now', () => {
+    assert.equal(
+      versions.currentChecksumsUrl('https://app.test.behindgate.net/'),
+      'https://app.test.behindgate.net/downloads/SHA256SUMS.txt'
+    );
+    assert.equal(
+      versions.currentDownloadUrl('https://app.test.behindgate.net', 'bg-deploy-linux-amd64.tar.gz'),
+      'https://app.test.behindgate.net/downloads/bg-deploy-linux-amd64.tar.gz'
+    );
+  });
+
+  test('checksumsUrl points at the manifest beside that version', () => {
+    assert.equal(
+      versions.checksumsUrl('https://app.test.behindgate.net/', '2026.8.5'),
+      'https://app.test.behindgate.net/downloads/2026.8.5/SHA256SUMS.txt'
     );
   });
 });

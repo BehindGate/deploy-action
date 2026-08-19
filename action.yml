@@ -30,6 +30,11 @@ inputs:
       `url` and `download-base-url` are the documented way to reach any other
       endpoint, and each wins over this input.
 
+      It also decides how the CLI download is verified. The default is verified
+      against the checksums committed in versions.json; an environment that
+      republishes its builds is verified against the checksum manifest the host
+      serves beside them, which is weaker and is warned about on every run.
+
       Values and rationale: docs/MAINTAINERS.md, "The undocumented `env` input".
     required: false
     default: 'prod'
@@ -140,6 +145,11 @@ inputs:
       the value must be one of them -- an unpinned version has no checksum to
       verify against.
 
+      Where the CLI is not verified against versions.json (see the `env` input,
+      which is internal), any version the download host serves is accepted, and
+      leaving this unset takes whatever that host is serving now, identified by
+      its checksum rather than by a version number.
+
       Downloads are versioned and immutable
       (`/downloads/<version>/<archive>`), so this requests a specific published
       release by name rather than asserting what the host happens to be serving.
@@ -156,7 +166,8 @@ inputs:
 
       For the two published environments `env` sets this for you. Override it
       when you serve the CLI from somewhere else entirely; the checksums in
-      versions.json must match whatever that host serves.
+      versions.json must match whatever that host serves, since overriding the
+      host does not change which checksums are used.
     required: false
     default: ''
 
