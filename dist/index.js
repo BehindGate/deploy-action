@@ -28296,12 +28296,20 @@ module.exports = {
  * the host the CLI itself is downloaded from. They are not the same URL and one
  * is not derivable from the other by string surgery, so both are spelled out.
  *
- * The deploy endpoint carries the `/api/deploy` path. The bare host is served by
- * a CDN that answers a POST with 403 text/html, and the CLI sends the request to
- * `--url` exactly as given rather than appending a path, so a host on its own is
- * not a usable endpoint.
+ * The deploy endpoint is the RELEASES collection, `/api/deploy/releases`. The
+ * CLI posts to `--url` exactly as given to create a release and appends the
+ * release id to poll it, and it derives the sibling routes by trimming that last
+ * segment -- `/api/deploy/oidc/token` for the credential exchange, `/api/deploy/apps`
+ * to resolve `--site-url`, `/api/deploy/publish` to publish. Naming the parent
+ * instead puts release creation on the wrong route, and the bare host is worse
+ * still: it is fronted by a CDN that answers a POST with 403 text/html.
  *
  * Downloads, by contrast, hang off the bare host: `<host>/downloads/<version>/`.
+ *
+ * `pinnedCli` records whether `versions.json` describes what a host serves. The
+ * committed checksums were captured from production, and production publishes a
+ * version once; test republishes, so a pin there describes the build for as long
+ * as it takes someone to rebuild it. See `docs/MAINTAINERS.md`.
  */
 
 class UnknownEnvironmentError extends Error {
@@ -28321,17 +28329,51 @@ class UnknownEnvironmentError extends Error {
 const ENVIRONMENTS = Object.freeze({
   prod: Object.freeze({
     name: 'prod',
-    deployUrl: 'https://app.behindgate.com/api/deploy',
+    deployUrl: 'https://app.behindgate.com/api/deploy/releases',
     downloadBaseUrl: 'https://app.behindgate.com',
+    pinnedCli: true,
   }),
   test: Object.freeze({
     name: 'test',
-    deployUrl: 'https://app.test.behindgate.net/api/deploy',
+    deployUrl: 'https://app.test.behindgate.net/api/deploy/releases',
     downloadBaseUrl: 'https://app.test.behindgate.net',
+    pinnedCli: false,
   }),
 });
 
 const DEFAULT_ENVIRONMENT = 'prod';
+
+/**
+ * The origins this Action will read CLI metadata from.
+ *
+ * Only consulted where the checksum comes from the download host itself. There
+ * the host both serves the archive and declares its digest, so it can hand over
+ * any bytes it likes together with a digest that matches -- which is tolerable
+ * from a host named in this file and reviewed with it, and not from one a
+ * workflow input picked. Where the digest is pinned in `versions.json` the host
+ * has no such say, and `download-base-url` may point anywhere.
+ */
+const KNOWN_DOWNLOAD_ORIGINS = Object.freeze(
+  Object.values(ENVIRONMENTS).map((environment) => new URL(environment.downloadBaseUrl).origin)
+);
+
+/**
+ * Whether a URL belongs to a download host this repository names.
+ *
+ * Compares the ORIGIN, so scheme, host and port all have to match: an http://
+ * spelling of a known host is a different origin and is refused with the rest.
+ */
+function isKnownDownloadOrigin(url) {
+  let origin;
+
+  try {
+    origin = new URL(String(url)).origin;
+  } catch {
+    return false;
+  }
+
+  return KNOWN_DOWNLOAD_ORIGINS.includes(origin);
+}
 
 /** The environment names accepted by the `env` input. */
 function knownEnvironments() {
@@ -28346,7 +28388,7 @@ function knownEnvironments() {
  * production would send a build to an environment the caller did not name.
  *
  * @param {string} [value]
- * @returns {{name: string, deployUrl: string, downloadBaseUrl: string}}
+ * @returns {{name: string, deployUrl: string, downloadBaseUrl: string, pinnedCli: boolean}}
  */
 function resolveEnvironment(value) {
   const requested = String(value ?? '').trim();
@@ -28363,6 +28405,8 @@ function resolveEnvironment(value) {
 module.exports = {
   ENVIRONMENTS,
   DEFAULT_ENVIRONMENT,
+  KNOWN_DOWNLOAD_ORIGINS,
+  isKnownDownloadOrigin,
   knownEnvironments,
   resolveEnvironment,
   UnknownEnvironmentError,
@@ -28732,6 +28776,156 @@ module.exports = {
 
 /***/ }),
 
+/***/ 6732:
+/***/ ((module, __unused_webpack_exports, __nccwpck_require__) => {
+
+"use strict";
+
+
+/**
+ * Parsing of what the download host publishes about its own builds: the
+ * release index and the SHA256SUMS.txt served beside each version.
+ *
+ * Pure, dependency-free: no `@actions/*` imports and no network access. The
+ * caller fetches; this only reads.
+ *
+ * WHAT THIS IS AND IS NOT. A checksum served by the same host as the binary it
+ * describes proves only that the download arrived intact -- anyone able to serve
+ * a modified binary can serve a matching line beside it. That is exactly why
+ * `versions.json` exists and why production verifies against it instead.
+ *
+ * This is for the test environment, whose builds are republished often enough
+ * that a committed pin describes them for hours at a time. The choice there is
+ * not "pinned or host-served"; it is "host-served or nothing", and a truncated
+ * or half-published archive is the failure that actually happens.
+ */
+
+const versions = __nccwpck_require__(2200);
+
+/** ` at <source>`, or nothing. Kept out of the messages so they stay readable. */
+function at(source) {
+  return source ? ` at ${source}` : '';
+}
+
+class MalformedChecksumsError extends Error {
+  constructor(source) {
+    super(
+      `Could not read any checksum from the manifest${at(source)}. ` +
+        `Expected lines of "<64 hex digits>  <filename>". Refusing to run a ` +
+        `download that nothing describes.`
+    );
+    this.name = 'MalformedChecksumsError';
+  }
+}
+
+class ChecksumNotListedError extends Error {
+  constructor(archive, listed, source) {
+    super(
+      `The manifest${at(source)} has no entry for ${archive}. ` +
+        `It lists: ${listed.join(', ') || '(nothing)'}. ` +
+        `The host is serving a build for this platform that it does not describe, ` +
+        `so there is nothing to verify the download against.`
+    );
+    this.name = 'ChecksumNotListedError';
+    this.archive = archive;
+  }
+}
+
+/** One `<digest>  <name>` line, in the format sha256sum(1) writes. */
+const LINE = /^([0-9a-f]{64})\s+\*?(\S+)$/i;
+
+/**
+ * Parse a SHA256SUMS.txt into `{ filename: digest }`.
+ *
+ * Unreadable lines are skipped rather than fatal -- a comment or a trailing
+ * blank line should not cost the whole manifest -- but a file that yields no
+ * entries at all is an error, since that is what an HTML error page served with
+ * a 200 looks like.
+ *
+ * @throws {MalformedChecksumsError}
+ */
+function parseChecksums(text, { source } = {}) {
+  const entries = {};
+
+  for (const line of String(text ?? '').split('\n')) {
+    const match = LINE.exec(line.trim());
+    if (match) entries[match[2]] = match[1].toLowerCase();
+  }
+
+  if (!Object.keys(entries).length) throw new MalformedChecksumsError(source);
+
+  return entries;
+}
+
+/**
+ * The digest a manifest gives for one archive.
+ *
+ * @throws {MalformedChecksumsError|ChecksumNotListedError}
+ * @returns {string} lowercase hex digest
+ */
+function checksumFor(text, archive, { source } = {}) {
+  const entries = parseChecksums(text, { source });
+  const digest = entries[archive];
+
+  if (!digest) {
+    throw new ChecksumNotListedError(archive, Object.keys(entries), source);
+  }
+
+  return digest;
+}
+
+/**
+ * Resolve, from the host itself, which build to download and the digest to hold
+ * it to.
+ *
+ * `fetchText(url, what)` is injected rather than imported so this module stays
+ * free of any transport of its own, and so a test can point it at a local
+ * server without a network.
+ *
+ * @returns {Promise<{version: string, platform: string, archive: string, binary: string, sha256: string, verifiedAgainst: string}>}
+ */
+async function resolveHostArtifact({ baseUrl, platform, version, fetchText }) {
+  const requested = String(version ?? '').trim();
+  const names = versions.artifactNames(platform);
+
+  // Without a requested version, both URLs are the host's unversioned ones:
+  // "whatever you are serving now". That is the only question worth asking an
+  // environment that republishes, and it keeps every URL built from constants --
+  // no document the host serves gets to decide which URL is fetched next.
+  const source = requested
+    ? versions.checksumsUrl(baseUrl, requested)
+    : versions.currentChecksumsUrl(baseUrl);
+
+  const sha256 = checksumFor(await fetchText(source, 'checksum manifest'), names.archive, {
+    source,
+  });
+
+  return {
+    // Null where the build is the host's current one: it has no version until
+    // the CLI reports its own, and the digest below is what identifies it.
+    version: requested || null,
+    platform,
+    archive: names.archive,
+    binary: names.binary,
+    sha256,
+    downloadUrl: requested
+      ? versions.downloadUrl(baseUrl, requested, names.archive)
+      : versions.currentDownloadUrl(baseUrl, names.archive),
+    verifiedAgainst: source,
+  };
+}
+
+module.exports = {
+  parseChecksums,
+  checksumFor,
+  resolveHostArtifact,
+  MalformedChecksumsError,
+  ChecksumNotListedError,
+};
+
+
+/***/ }),
+
 /***/ 4234:
 /***/ ((module) => {
 
@@ -28753,7 +28947,7 @@ module.exports = {
  * Reference stdout from a successful run (bg-deploy 2026.8.3):
  *
  *   {"releaseId":"rel_01J8ZQ","url":"https://demo.behindgate.com/my-app/",
- *    "endpoint":"https://app.behindgate.com/api/deploy","status":"published",
+ *    "endpoint":"https://app.behindgate.com/api/deploy/releases","status":"published",
  *    "version":"2026.8.3"}
  */
 
@@ -29026,6 +29220,23 @@ function resolveArtifact(version, platform, table = DEFAULT_TABLE) {
 }
 
 /**
+ * The archive and binary names for a platform, by the vendor's convention.
+ *
+ * `resolveArtifact` reads these from the pin table, which is the right answer
+ * whenever the version is pinned. This derives them instead, for the one case
+ * that has no entry to read: a host serving a build newer than anything
+ * committed here. A unit test holds the convention to every pinned entry, so a
+ * rename upstream fails here rather than as a 404 mid-deploy.
+ */
+function artifactNames(platform) {
+  const windows = String(platform).startsWith('windows-');
+  return {
+    archive: `bg-deploy-${platform}.${windows ? 'zip' : 'tar.gz'}`,
+    binary: windows ? 'bg-deploy.exe' : 'bg-deploy',
+  };
+}
+
+/**
  * Normalise a vendor version string into valid semver, or null if it cannot be.
  *
  * This exists because tool caches key on semver, and BehindGate's version
@@ -29052,6 +29263,71 @@ function semverSafeVersion(version) {
 }
 
 /**
+ * Versions that may be spliced into a URL path.
+ *
+ * A version reaches these builders from a workflow input or, on an unpinned
+ * environment, from the host's own release index -- so it is remote data
+ * steering the next request. Anything outside this shape is refused rather than
+ * escaped: `latest: "../../elsewhere"` is not a version, and treating it as one
+ * would fetch a path nobody named.
+ *
+ * The character set is deliberately one that percent-encoding leaves untouched,
+ * so validating and encoding cannot disagree about what the segment is.
+ */
+const URL_SAFE_VERSION = /^[A-Za-z0-9][A-Za-z0-9._~-]{0,63}$/;
+
+class UnsafeVersionError extends Error {
+  constructor(version) {
+    super(
+      `"${version}" is not a usable bg-deploy version. Expected letters, ` +
+        `digits, dots, hyphens, underscores or tildes (up to 64 characters), ` +
+        `such as 2026.8.5. A value outside that cannot be part of a download ` +
+        `URL, since it would change which path is fetched.`
+    );
+    this.name = 'UnsafeVersionError';
+    this.version = version;
+  }
+}
+
+/** Whether a version can be used as a URL path segment. */
+function isUrlSafeVersion(version) {
+  return URL_SAFE_VERSION.test(String(version ?? ''));
+}
+
+/**
+ * The version as a URL path segment: matched against the pattern, then encoded.
+ *
+ * What is returned is the MATCH rather than the argument. The two are the same
+ * string, and taking it from the match is what makes the guarantee local: the
+ * value that goes into a URL provably came from the pattern above, with no
+ * reliance on a caller having checked anything first.
+ *
+ * @throws {UnsafeVersionError}
+ */
+function versionSegment(version) {
+  const matched = URL_SAFE_VERSION.exec(String(version ?? ''));
+  if (!matched) throw new UnsafeVersionError(version);
+
+  return encodeURIComponent(matched[0]);
+}
+
+/**
+ * Drop any trailing slashes from a base URL.
+ *
+ * A loop rather than `replace(/\/+$/, '')`: the regex form backtracks, so its
+ * runtime grows super-linearly with a long run of slashes, and these base URLs
+ * come from a workflow input. The result is identical and the cost is not.
+ */
+function withoutTrailingSlash(value) {
+  const text = String(value);
+
+  let end = text.length;
+  while (end > 0 && text.charAt(end - 1) === '/') end -= 1;
+
+  return text.slice(0, end);
+}
+
+/**
  * Build the download URL for an archive.
  *
  * Versioned and immutable: `/downloads/<version>/<archive>`. Until 2026.8.x the
@@ -29065,13 +29341,67 @@ function semverSafeVersion(version) {
  * the same host), so hardcoding one would break every non-production user.
  */
 function downloadUrl(baseUrl, version, archive) {
-  const trimmed = String(baseUrl).replace(/\/+$/, '');
-  return `${trimmed}/downloads/${version}/${archive}`;
+  return `${withoutTrailingSlash(baseUrl)}/downloads/${versionSegment(version)}/${archive}`;
+}
+
+/**
+ * URL of the archive a host is serving RIGHT NOW, with no version in the path.
+ *
+ * The versioned paths above name a specific release. These name whatever the
+ * host currently publishes, which is the only thing an environment that
+ * republishes can be asked for -- and it takes no version, so nothing a remote
+ * document said can decide which URL is fetched.
+ */
+function currentDownloadUrl(baseUrl, archive) {
+  return `${withoutTrailingSlash(baseUrl)}/downloads/${archive}`;
+}
+
+/** URL of the checksum manifest for whatever the host is serving right now. */
+function currentChecksumsUrl(baseUrl) {
+  return `${withoutTrailingSlash(baseUrl)}/downloads/SHA256SUMS.txt`;
 }
 
 /** URL of the published release index (`{latest, versions: [...]}`). */
 function indexUrl(baseUrl) {
-  return `${String(baseUrl).replace(/\/+$/, '')}/downloads/index.json`;
+  return `${withoutTrailingSlash(baseUrl)}/downloads/index.json`;
+}
+
+/** URL of the checksum manifest a host serves beside one version's archives. */
+function checksumsUrl(baseUrl, version) {
+  return `${withoutTrailingSlash(baseUrl)}/downloads/${versionSegment(version)}/SHA256SUMS.txt`;
+}
+
+/**
+ * The tool-cache key for a build, as version plus the digest that identifies it.
+ *
+ * A version alone is enough where a version is published once and never again.
+ * It is not enough on a host that republishes: the cache would hand back the
+ * previous build under the same key, and the run would silently use bytes the
+ * host has since replaced -- the one thing re-downloading was supposed to catch.
+ *
+ * The digest goes in a PRERELEASE segment rather than semver build metadata:
+ * `semver.clean`, which the tool cache applies to whatever it is given, keeps a
+ * prerelease and discards build metadata. `2026.8.5+sha.abc` would land in the
+ * same cache entry as `2026.8.5`, which is exactly the collision being avoided.
+ *
+ * @returns {string|null} null when the version cannot be normalised, as before
+ */
+function cacheKey(version, sha256) {
+  const digest = String(sha256 ?? '').trim().toLowerCase();
+  const identified = /^[0-9a-f]{12,}$/.test(digest);
+
+  // A build taken from the host's unversioned path has no version to key on --
+  // its identity IS its digest. `0.0.0` carries no claim about which release it
+  // is; the digest that follows is what distinguishes one build from the next.
+  if (version === null || version === undefined || version === '') {
+    return identified ? `0.0.0-sha.${digest.slice(0, 12)}` : null;
+  }
+
+  const normalized = semverSafeVersion(version);
+  if (!normalized) return null;
+  if (!identified) return normalized;
+
+  return `${normalized}-sha.${digest.slice(0, 12)}`;
 }
 
 module.exports = {
@@ -29080,9 +29410,18 @@ module.exports = {
   defaultDownloadBaseUrl,
   knownVersions,
   resolveArtifact,
+  artifactNames,
   semverSafeVersion,
+  cacheKey,
+  withoutTrailingSlash,
+  isUrlSafeVersion,
+  versionSegment,
+  UnsafeVersionError,
   downloadUrl,
+  currentDownloadUrl,
   indexUrl,
+  checksumsUrl,
+  currentChecksumsUrl,
   UnknownVersionError,
   UnknownPlatformError,
 };
@@ -29119,8 +29458,85 @@ const { verifyFileChecksum } = __nccwpck_require__(8226);
 const { parseDeployJson, parseErrorMessage } = __nccwpck_require__(4234);
 const { describeExitCode, EXIT_SUCCESS } = __nccwpck_require__(6938);
 const { resolveInputs, ConfigurationError } = __nccwpck_require__(2240);
+const { isKnownDownloadOrigin, KNOWN_DOWNLOAD_ORIGINS } = __nccwpck_require__(7295);
+const manifest = __nccwpck_require__(6732);
 
 const TOOL_NAME = 'bg-deploy';
+
+/** Fetch a small text document, failing with the URL rather than a bare error. */
+async function fetchText(url, what) {
+  // This is only reached where the checksum comes from the host rather than
+  // from versions.json, so the host decides both what the bytes are and what
+  // they should hash to. Restricting the request to an origin named in
+  // src/core/environments.js is what keeps `download-base-url` from nominating
+  // an arbitrary host for that pair. Checked here, immediately before the
+  // request, rather than somewhere upstream that a later caller could bypass.
+  if (!isKnownDownloadOrigin(url)) {
+    throw new ConfigurationError(
+      [
+        `Refusing to read the ${what} from ${url}.`,
+        '',
+        'On this environment the CLI is verified against the checksum manifest ' +
+          'the download host serves, so that host is trusted to describe its own ' +
+          'build. Only the hosts named in this Action may be: ' +
+          `${KNOWN_DOWNLOAD_ORIGINS.join(', ')}.`,
+        '',
+        'To download the CLI from anywhere else, pin its checksums in ' +
+          'versions.json and use an environment that verifies against them.',
+      ].join('\n')
+    );
+  }
+
+  let response;
+
+  try {
+    response = await fetch(url);
+  } catch (error) {
+    throw new Error(`Could not reach the ${what} at ${url}: ${error.message}`);
+  }
+
+  if (!response.ok) {
+    throw new Error(`Could not read the ${what} at ${url}: HTTP ${response.status}`);
+  }
+
+  return response.text();
+}
+
+/**
+ * Resolve which build to download, and the digest to hold it to.
+ *
+ * Two sources, and which one applies is a property of the environment rather
+ * than of the caller:
+ *
+ * PINNED (production). The version and its digest both come from `versions.json`,
+ * committed here, where changing either takes a reviewed commit. This is the
+ * guarantee the Action is built around and it does not move.
+ *
+ * HOST-SERVED (test). Test republishes builds, so a committed digest describes
+ * one for about as long as it takes to rebuild it, and a version newer than
+ * anything committed has no entry at all. Both the archive and its digest come
+ * from the host's unversioned paths -- "whatever you are serving now" -- so the
+ * build is identified by that digest rather than by a version number.
+ *
+ * That is a weaker check and it is labelled as one wherever it is used: a
+ * manifest served by the host it describes cannot detect a host serving a
+ * modified build. It still catches the failure that actually happens there --
+ * a truncated or half-published archive -- and the alternative on that host is
+ * not a pin, it is no check at all.
+ */
+async function resolveArtifact({ version, platform, baseUrl, pinned }) {
+  if (pinned) {
+    const resolved = version || versions.defaultVersion();
+    const artifact = versions.resolveArtifact(resolved, platform);
+    return {
+      ...artifact,
+      downloadUrl: versions.downloadUrl(baseUrl, resolved, artifact.archive),
+      verifiedAgainst: 'versions.json',
+    };
+  }
+
+  return manifest.resolveHostArtifact({ baseUrl, platform, version, fetchText });
+}
 
 /**
  * Download, verify, and cache the CLI. Returns the path to the executable.
@@ -29128,27 +29544,41 @@ const TOOL_NAME = 'bg-deploy';
  * Verification happens on the downloaded archive BEFORE extraction, so a
  * tampered archive is never unpacked onto the runner.
  */
-async function acquireCli({ version, platform, baseUrl }) {
-  const artifact = versions.resolveArtifact(version, platform);
+async function acquireCli({ version, platform, baseUrl, pinned = true }) {
+  const artifact = await resolveArtifact({ version, platform, baseUrl, pinned });
+  const resolvedVersion = artifact.version;
+
+  // The host's current build has no version until the CLI reports its own, so
+  // the digest stands in for one everywhere a human reads it.
+  const label = resolvedVersion || `(current build ${artifact.sha256.slice(0, 12)})`;
 
   // The tool cache keys on semver, and the vendor's version strings are not
   // valid semver (`2026.07.1`). Store and look up under a normalised value, or
   // the lookup silently misses and every run re-downloads the CLI.
-  const cacheVersion = versions.semverSafeVersion(version);
+  //
+  // Where the build is not pinned, the digest joins the key -- or replaces it
+  // outright for a build taken from the unversioned path. A key that ignored the
+  // digest would keep serving the build the host has since replaced.
+  const cacheVersion = pinned
+    ? versions.semverSafeVersion(resolvedVersion)
+    : versions.cacheKey(resolvedVersion, artifact.sha256);
 
   const cached = cacheVersion ? tc.find(TOOL_NAME, cacheVersion, platform) : '';
   if (cached) {
-    core.info(`Using cached bg-deploy ${version} (${platform}) from ${cached}`);
-    return path.join(cached, artifact.binary);
+    core.info(`Using cached bg-deploy ${label} (${platform}) from ${cached}`);
+    return {
+      binary: path.join(cached, artifact.binary),
+      version: label,
+      verifiedAgainst: artifact.verifiedAgainst,
+    };
   }
 
-  const url = versions.downloadUrl(baseUrl, version, artifact.archive);
-  core.info(`Downloading bg-deploy ${version} (${platform}) from ${url}`);
+  core.info(`Downloading bg-deploy ${label} (${platform}) from ${artifact.downloadUrl}`);
 
-  const archivePath = await tc.downloadTool(url);
+  const archivePath = await tc.downloadTool(artifact.downloadUrl);
 
-  await verifyFileChecksum(archivePath, artifact.sha256, { source: url });
-  core.info(`Checksum verified against versions.json: ${artifact.sha256}`);
+  await verifyFileChecksum(archivePath, artifact.sha256, { source: artifact.downloadUrl });
+  core.info(`Checksum verified against ${artifact.verifiedAgainst}: ${artifact.sha256}`);
 
   const extractedDir = artifact.archive.endsWith('.zip')
     ? await tc.extractZip(archivePath)
@@ -29159,8 +29589,8 @@ async function acquireCli({ version, platform, baseUrl }) {
     installDir = await tc.cacheDir(extractedDir, TOOL_NAME, cacheVersion, platform);
   } else {
     core.warning(
-      `bg-deploy version "${version}" cannot be normalised to semver, so it ` +
-        `cannot be cached and will be downloaded again on every run.`
+      `bg-deploy ${label} cannot be given a cache key, so it will be downloaded ` +
+        `again on every run.`
     );
   }
 
@@ -29170,7 +29600,7 @@ async function acquireCli({ version, platform, baseUrl }) {
     fs.chmodSync(binary, 0o755);
   }
 
-  return binary;
+  return { binary, version: label, verifiedAgainst: artifact.verifiedAgainst };
 }
 
 /**
@@ -29223,6 +29653,7 @@ async function writeSummary({
   deployPath,
   siteUrl,
   version,
+  verifiedAgainst,
   deleteApp,
   deleted,
 }) {
@@ -29252,7 +29683,16 @@ async function writeSummary({
     if (siteUrl) {
       rows.push([{ data: 'Target', header: true }, { data: siteUrl }]);
     }
-    rows.push([{ data: 'CLI', header: true }, { data: `bg-deploy ${version}` }]);
+    rows.push([
+      { data: 'CLI', header: true },
+      {
+        data:
+          `bg-deploy ${version} ` +
+          (verifiedAgainst === 'versions.json'
+            ? '(checksum pinned in <code>versions.json</code>)'
+            : `(checksum from the host's own manifest, not a pin)`),
+      },
+    ]);
     rows.push([
       { data: 'Endpoint', header: true },
       { data: `${endpoint || 'unknown'} (pinned via ${endpointSource})` },
@@ -29304,10 +29744,27 @@ async function run() {
   if (deployPath) validatePath(deployPath);
   if (!usesToken) requireOidcAvailable();
 
-  const version = core.getInput('cli-version').trim() || versions.defaultVersion();
-
   const platform = resolvePlatform();
-  const binary = await acquireCli({ version, platform, baseUrl: inputs.downloadBaseUrl });
+  const pinnedCli = inputs.environment.pinnedCli;
+
+  const cli = await acquireCli({
+    version: core.getInput('cli-version').trim(),
+    platform,
+    baseUrl: inputs.downloadBaseUrl,
+    pinned: pinnedCli,
+  });
+  const binary = cli.binary;
+
+  if (!pinnedCli) {
+    core.warning(
+      `The CLI was verified against the checksum manifest ${cli.verifiedAgainst} ` +
+        `rather than against the checksums committed in versions.json. That host ` +
+        `serves both the binary and the manifest, so the check proves the download ` +
+        `arrived intact, not that the build is the one this repository reviewed. ` +
+        `This applies to the ${inputs.environment.name} environment, whose builds ` +
+        `are republished too often for a committed pin to describe them.`
+    );
+  }
 
   core.info(
     usesToken
@@ -29401,7 +29858,8 @@ async function run() {
     endpointSource,
     deployPath,
     siteUrl,
-    version: parsed?.version || version,
+    version: parsed?.version || cli.version,
+    verifiedAgainst: cli.verifiedAgainst,
     deleteApp: inputs.deleteApp,
     deleted: parsed?.deleted,
   });
