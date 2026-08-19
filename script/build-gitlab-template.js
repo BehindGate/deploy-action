@@ -7,11 +7,13 @@
  *   node script/build-gitlab-template.js          # rewrite the generated files
  *   node script/build-gitlab-template.js --check  # fail if either is stale
  *
- * Two things are generated:
+ * Two files are generated, in two steps:
  *
- *   versions.json          -> the pin table inside src/gitlab/deploy.sh
- *   src/core/environments.js -> the environment table inside src/gitlab/deploy.sh
- *   src/gitlab/deploy.sh   -> the script body inside templates/deploy.yml
+ *   versions.json and src/core/environments.js
+ *       -> the pin table and the environment table, inlined into
+ *          src/gitlab/deploy.sh
+ *   src/gitlab/deploy.sh
+ *       -> the script body, spliced into templates/deploy.yml
  *
  * WHY THE PINS ARE INLINED. A component is YAML that GitLab merges into the
  * including project's pipeline; this repository is never checked out on the

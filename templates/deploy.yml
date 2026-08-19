@@ -247,7 +247,10 @@ spec:
       # `env` selects both addresses that have to agree: the deploy endpoint and the
       # host the CLI is downloaded from. They are not the same URL and neither derives
       # from the other, so both come from the table above.
-      BG_ENV="${BG_ENV:-}"
+      # Trimmed at the ends and lowercased, because resolveEnvironment() does exactly
+      # that before its lookup. An interior space is left alone so it still fails in
+      # both: the point is that the two agree, not that either is lenient.
+      BG_ENV=$(printf '%s' "${BG_ENV:-}" | sed 's/^[[:space:]]*//; s/[[:space:]]*$//' | tr 'A-Z' 'a-z')
       [ -n "$BG_ENV" ] || BG_ENV="$BG_DEFAULT_ENV"
 
       if ! bg_entry=$(bg_env "$BG_ENV"); then

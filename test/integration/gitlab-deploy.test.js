@@ -25,6 +25,7 @@ const { startCaptureServer, fakeJwt } = require('../helpers/capture-server');
 const { startDownloadServer } = require('../helpers/download-server');
 const { acquireRealCli, makeSiteFixture } = require('../helpers/cli');
 const { listZipEntries } = require('../helpers/zip');
+const { resolveEnvironment } = require('../../src/core/environments');
 
 const SCRIPT = path.join(__dirname, '..', '..', 'src', 'gitlab', 'deploy.sh');
 
@@ -367,6 +368,36 @@ describe('the GitLab component fails early on bad configuration', () => {
     assert.match(result.stderr, /prod test/);
     assert.equal(downloads.requests.length, before, 'nothing may be fetched for an unknown env');
   }, { timeout: 60000 });
+
+  test('accepts exactly the env spellings resolveEnvironment does', async (t) => {
+    if (skipReason) return t.skip(skipReason);
+
+    // The component cannot import resolveEnvironment, so it reimplements the
+    // normalisation -- trim the ends, lowercase. `env: Prod` working in one and
+    // not the other is the kind of divergence that only shows up in someone
+    // else's pipeline. An unpinned cli-version stops each run right after the
+    // env lookup, so this needs no network.
+    for (const value of ['prod', 'PROD', ' Prod ', 'test', 'TEST', 'staging', 'pr od', '']) {
+      let accepted = true;
+      try {
+        resolveEnvironment(value);
+      } catch {
+        accepted = false;
+      }
+
+      const result = await runComponent(makeWorkspace(), {
+        BG_ENV: value,
+        BG_CLI_VERSION: '1999.1.1',
+      });
+
+      const refused = /Unknown `env` input/.test(result.stderr);
+      assert.equal(
+        refused,
+        !accepted,
+        `the shell and resolveEnvironment disagree about ${JSON.stringify(value)}`
+      );
+    }
+  }, { timeout: 120000 });
 
   test('`url` wins over the endpoint `env` resolves', async (t) => {
     if (skipReason) return t.skip(skipReason);
