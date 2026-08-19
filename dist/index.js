@@ -28340,6 +28340,38 @@ const ENVIRONMENTS = Object.freeze({
 
 const DEFAULT_ENVIRONMENT = 'prod';
 
+/**
+ * The origins this Action will read CLI metadata from.
+ *
+ * Only consulted where the checksum comes from the download host itself. There
+ * the host both serves the archive and declares its digest, so it can hand over
+ * any bytes it likes together with a digest that matches -- which is tolerable
+ * from a host named in this file and reviewed with it, and not from one a
+ * workflow input picked. Where the digest is pinned in `versions.json` the host
+ * has no such say, and `download-base-url` may point anywhere.
+ */
+const KNOWN_DOWNLOAD_ORIGINS = Object.freeze(
+  Object.values(ENVIRONMENTS).map((environment) => new URL(environment.downloadBaseUrl).origin)
+);
+
+/**
+ * Whether a URL belongs to a download host this repository names.
+ *
+ * Compares the ORIGIN, so scheme, host and port all have to match: an http://
+ * spelling of a known host is a different origin and is refused with the rest.
+ */
+function isKnownDownloadOrigin(url) {
+  let origin;
+
+  try {
+    origin = new URL(String(url)).origin;
+  } catch {
+    return false;
+  }
+
+  return KNOWN_DOWNLOAD_ORIGINS.includes(origin);
+}
+
 /** The environment names accepted by the `env` input. */
 function knownEnvironments() {
   return Object.keys(ENVIRONMENTS);
@@ -28370,6 +28402,8 @@ function resolveEnvironment(value) {
 module.exports = {
   ENVIRONMENTS,
   DEFAULT_ENVIRONMENT,
+  KNOWN_DOWNLOAD_ORIGINS,
+  isKnownDownloadOrigin,
   knownEnvironments,
   resolveEnvironment,
   UnknownEnvironmentError,
@@ -29347,12 +29381,35 @@ const { verifyFileChecksum } = __nccwpck_require__(8226);
 const { parseDeployJson, parseErrorMessage } = __nccwpck_require__(4234);
 const { describeExitCode, EXIT_SUCCESS } = __nccwpck_require__(6938);
 const { resolveInputs, ConfigurationError } = __nccwpck_require__(2240);
+const { isKnownDownloadOrigin, KNOWN_DOWNLOAD_ORIGINS } = __nccwpck_require__(7295);
 const manifest = __nccwpck_require__(6732);
 
 const TOOL_NAME = 'bg-deploy';
 
 /** Fetch a small text document, failing with the URL rather than a bare error. */
 async function fetchText(url, what) {
+  // This is only reached where the checksum comes from the host rather than
+  // from versions.json, so the host decides both what the bytes are and what
+  // they should hash to. Restricting the request to an origin named in
+  // src/core/environments.js is what keeps `download-base-url` from nominating
+  // an arbitrary host for that pair. Checked here, immediately before the
+  // request, rather than somewhere upstream that a later caller could bypass.
+  if (!isKnownDownloadOrigin(url)) {
+    throw new ConfigurationError(
+      [
+        `Refusing to read the ${what} from ${url}.`,
+        '',
+        'On this environment the CLI is verified against the checksum manifest ' +
+          'the download host serves, so that host is trusted to describe its own ' +
+          'build. Only the hosts named in this Action may be: ' +
+          `${KNOWN_DOWNLOAD_ORIGINS.join(', ')}.`,
+        '',
+        'To download the CLI from anywhere else, pin its checksums in ' +
+          'versions.json and use an environment that verifies against them.',
+      ].join('\n')
+    );
+  }
+
   let response;
 
   try {
@@ -29610,6 +29667,7 @@ async function run() {
     baseUrl: inputs.downloadBaseUrl,
     pinned: pinnedCli,
   });
+  const binary = cli.binary;
 
   if (!pinnedCli) {
     core.warning(
@@ -29648,7 +29706,7 @@ async function run() {
     delete childEnv.BEHINDGATE_TOKEN;
   }
 
-  const exitCode = await exec.exec(cli.binary, args, {
+  const exitCode = await exec.exec(binary, args, {
     ignoreReturnCode: true,
     silent: true,
     env: childEnv,

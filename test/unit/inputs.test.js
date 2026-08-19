@@ -7,7 +7,9 @@ const { resolveInputs, parseBoolean, ConfigurationError } = require('../../src/c
 const {
   resolveEnvironment,
   knownEnvironments,
+  isKnownDownloadOrigin,
   ENVIRONMENTS,
+  KNOWN_DOWNLOAD_ORIGINS,
   UnknownEnvironmentError,
 } = require('../../src/core/environments');
 const versions = require('../../src/core/versions');
@@ -78,11 +80,58 @@ describe('environments', () => {
     assert.equal(resolveEnvironment('').pinnedCli, true);
   });
 
+  test('the known download origins are exactly the environments\' hosts', () => {
+    assert.deepEqual(
+      [...KNOWN_DOWNLOAD_ORIGINS].sort(),
+      Object.values(ENVIRONMENTS)
+        .map((environment) => environment.downloadBaseUrl)
+        .sort()
+    );
+  });
+
   test("prod's download host is the one the pinned checksums came from", () => {
     // A checksum only means something relative to whoever served it. If
     // versions.json ever moves its default host, `env: prod` must move with it
     // or the pins would be verified against a host they never described.
     assert.equal(ENVIRONMENTS.prod.downloadBaseUrl, versions.defaultDownloadBaseUrl());
+  });
+});
+
+describe('isKnownDownloadOrigin', () => {
+  // Consulted only where the checksum comes from the download host itself: the
+  // host then decides both the bytes and the digest they should match, which is
+  // tolerable from a host named in this repository and not from one an input
+  // picked.
+  test('accepts a URL under either environment host', () => {
+    assert.equal(isKnownDownloadOrigin('https://app.behindgate.com/downloads/index.json'), true);
+    assert.equal(
+      isKnownDownloadOrigin('https://app.test.behindgate.net/downloads/2026.8.5/SHA256SUMS.txt'),
+      true
+    );
+  });
+
+  test('refuses another host, however similar', () => {
+    for (const url of [
+      'https://app.behindgate.com.evil.example/downloads/index.json',
+      'https://evil.example/app.behindgate.com/downloads/index.json',
+      'https://app.behindgate.net/downloads/index.json',
+      'https://localhost:8080/downloads/index.json',
+    ]) {
+      assert.equal(isKnownDownloadOrigin(url), false, url);
+    }
+  });
+
+  test('refuses a downgraded scheme on a known host', () => {
+    // Same host, different origin: a plaintext fetch of the file that decides
+    // which bytes are acceptable is not the same request.
+    const downgraded = ENVIRONMENTS.test.downloadBaseUrl.replace(/^https:/, 'http:');
+    assert.equal(isKnownDownloadOrigin(`${downgraded}/downloads/index.json`), false);
+  });
+
+  test('refuses anything that is not a URL at all', () => {
+    assert.equal(isKnownDownloadOrigin('nonsense'), false);
+    assert.equal(isKnownDownloadOrigin(''), false);
+    assert.equal(isKnownDownloadOrigin(undefined), false);
   });
 });
 

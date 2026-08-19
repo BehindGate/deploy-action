@@ -54,6 +54,38 @@ const ENVIRONMENTS = Object.freeze({
 
 const DEFAULT_ENVIRONMENT = 'prod';
 
+/**
+ * The origins this Action will read CLI metadata from.
+ *
+ * Only consulted where the checksum comes from the download host itself. There
+ * the host both serves the archive and declares its digest, so it can hand over
+ * any bytes it likes together with a digest that matches -- which is tolerable
+ * from a host named in this file and reviewed with it, and not from one a
+ * workflow input picked. Where the digest is pinned in `versions.json` the host
+ * has no such say, and `download-base-url` may point anywhere.
+ */
+const KNOWN_DOWNLOAD_ORIGINS = Object.freeze(
+  Object.values(ENVIRONMENTS).map((environment) => new URL(environment.downloadBaseUrl).origin)
+);
+
+/**
+ * Whether a URL belongs to a download host this repository names.
+ *
+ * Compares the ORIGIN, so scheme, host and port all have to match: an http://
+ * spelling of a known host is a different origin and is refused with the rest.
+ */
+function isKnownDownloadOrigin(url) {
+  let origin;
+
+  try {
+    origin = new URL(String(url)).origin;
+  } catch {
+    return false;
+  }
+
+  return KNOWN_DOWNLOAD_ORIGINS.includes(origin);
+}
+
 /** The environment names accepted by the `env` input. */
 function knownEnvironments() {
   return Object.keys(ENVIRONMENTS);
@@ -84,6 +116,8 @@ function resolveEnvironment(value) {
 module.exports = {
   ENVIRONMENTS,
   DEFAULT_ENVIRONMENT,
+  KNOWN_DOWNLOAD_ORIGINS,
+  isKnownDownloadOrigin,
   knownEnvironments,
   resolveEnvironment,
   UnknownEnvironmentError,

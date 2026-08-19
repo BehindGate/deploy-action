@@ -23,12 +23,35 @@ const { verifyFileChecksum } = require('./core/checksum');
 const { parseDeployJson, parseErrorMessage } = require('./core/parse');
 const { describeExitCode, EXIT_SUCCESS } = require('./core/errors');
 const { resolveInputs, ConfigurationError } = require('./core/inputs');
+const { isKnownDownloadOrigin, KNOWN_DOWNLOAD_ORIGINS } = require('./core/environments');
 const manifest = require('./core/manifest');
 
 const TOOL_NAME = 'bg-deploy';
 
 /** Fetch a small text document, failing with the URL rather than a bare error. */
 async function fetchText(url, what) {
+  // This is only reached where the checksum comes from the host rather than
+  // from versions.json, so the host decides both what the bytes are and what
+  // they should hash to. Restricting the request to an origin named in
+  // src/core/environments.js is what keeps `download-base-url` from nominating
+  // an arbitrary host for that pair. Checked here, immediately before the
+  // request, rather than somewhere upstream that a later caller could bypass.
+  if (!isKnownDownloadOrigin(url)) {
+    throw new ConfigurationError(
+      [
+        `Refusing to read the ${what} from ${url}.`,
+        '',
+        'On this environment the CLI is verified against the checksum manifest ' +
+          'the download host serves, so that host is trusted to describe its own ' +
+          'build. Only the hosts named in this Action may be: ' +
+          `${KNOWN_DOWNLOAD_ORIGINS.join(', ')}.`,
+        '',
+        'To download the CLI from anywhere else, pin its checksums in ' +
+          'versions.json and use an environment that verifies against them.',
+      ].join('\n')
+    );
+  }
+
   let response;
 
   try {
@@ -286,6 +309,7 @@ async function run() {
     baseUrl: inputs.downloadBaseUrl,
     pinned: pinnedCli,
   });
+  const binary = cli.binary;
 
   if (!pinnedCli) {
     core.warning(
@@ -324,7 +348,7 @@ async function run() {
     delete childEnv.BEHINDGATE_TOKEN;
   }
 
-  const exitCode = await exec.exec(cli.binary, args, {
+  const exitCode = await exec.exec(binary, args, {
     ignoreReturnCode: true,
     silent: true,
     env: childEnv,
