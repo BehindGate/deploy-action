@@ -241,6 +241,10 @@ The token arrives as a masked `BEHINDGATE_TOKEN` CI/CD variable rather than as
 an input, because component inputs are visible in the project's expanded
 pipeline configuration.
 
+Like the Pipe, the component never writes to your project directory — which
+matters more here than it sounds: `path: .` deploys that directory, so anything
+left beside your source would be published as part of your site.
+
 The CLI is the shared core, and neither wrapper reimplements the deploy HTTP
 protocol — so they stay thin and cannot drift apart in what a deploy does. What
 each *can* share depends on where it runs:

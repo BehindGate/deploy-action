@@ -16,7 +16,14 @@
 #   BG_CLI_VERSION        a pinned CLI version, or empty for the default
 #   BG_DOWNLOAD_BASE_URL  the CLI download host, or empty for the default
 #
-# Writes behindgate.env, which the job publishes as a dotenv report.
+# THE PROJECT DIRECTORY IS READ-ONLY. This component uploads a directory; that
+# is its whole contract, and it needs nothing written back to do it. The CLI it
+# downloads, unpacks and runs lives under a temporary directory removed on exit.
+#
+# That rules out a job `cache:` and a dotenv report, both of which can only name
+# paths inside $CI_PROJECT_DIR. It is worth the cost: `path: .` deploys that
+# directory, so anything left there is published as part of the site. The
+# release id and deployed address go to the log instead.
 
 set -eu
 
@@ -49,8 +56,13 @@ fi
 # character class are derived from it.
 bg_dots=$(printf '%s' "$BEHINDGATE_TOKEN" | tr -cd '.' | wc -c | tr -d ' ')
 bg_stray=$(printf '%s' "$BEHINDGATE_TOKEN" | tr -d 'A-Za-z0-9_.-' | wc -c | tr -d ' ')
+# A leading dot or a doubled dot means an empty header or payload segment, both
+# of which the Action rejects too. A TRAILING dot is deliberately allowed: that
+# is an empty signature, and the Action's check requires only the first two
+# segments to be non-empty. The two implementations cannot import each other, so
+# the corpus in test/integration/gitlab-deploy.test.js is what keeps them level.
 case "$BEHINDGATE_TOKEN" in
-  .* | *. | *..*) bg_dots=0 ;;
+  .* | *..*) bg_dots=0 ;;
 esac
 if [ "$bg_dots" != "2" ] || [ "$bg_stray" != "0" ]; then
   bg_fail \
@@ -185,24 +197,18 @@ bg_download() {
   fi
 }
 
-BG_CACHE_DIR=".bg-deploy-cache/$BG_VERSION"
-BG_ARCHIVE_PATH="$BG_CACHE_DIR/$BG_ARCHIVE"
+# Everything this job creates lives here, outside the project directory, and is
+# removed on the way out.
+BG_TMP=$(mktemp -d)
+trap 'rm -rf "$BG_TMP"' EXIT
+
+BG_ARCHIVE_PATH="$BG_TMP/$BG_ARCHIVE"
 BG_SOURCE="$BG_BASE/downloads/$BG_VERSION/$BG_ARCHIVE"
-mkdir -p "$BG_CACHE_DIR"
 
-# A cached archive is re-hashed rather than trusted: the runner cache is shared,
-# so its contents carry no more authority than a fresh download. One that still
-# matches the pin is exactly as good as re-fetching it, and saves the round trip.
-if [ -f "$BG_ARCHIVE_PATH" ] && [ "$(bg_sha256_of "$BG_ARCHIVE_PATH")" = "$BG_SHA256" ]; then
-  echo "Using the cached bg-deploy $BG_VERSION ($BG_PLATFORM) archive; it still matches the pinned checksum."
-else
-  rm -f "$BG_ARCHIVE_PATH"
-  echo "Downloading bg-deploy $BG_VERSION ($BG_PLATFORM) from $BG_SOURCE"
-  bg_download "$BG_SOURCE" "$BG_ARCHIVE_PATH" || bg_fail "Could not download $BG_SOURCE."
-fi
+echo "Downloading bg-deploy $BG_VERSION ($BG_PLATFORM) from $BG_SOURCE"
+bg_download "$BG_SOURCE" "$BG_ARCHIVE_PATH" || bg_fail "Could not download $BG_SOURCE."
 
-# Verified before extraction, so a tampered archive is never unpacked into the
-# workspace alongside your source and your build output.
+# Verified before extraction, so a tampered archive is never unpacked at all.
 bg_actual=$(bg_sha256_of "$BG_ARCHIVE_PATH")
 if [ "$bg_actual" != "$BG_SHA256" ]; then
   rm -f "$BG_ARCHIVE_PATH"
@@ -218,8 +224,7 @@ if [ "$bg_actual" != "$BG_SHA256" ]; then
 fi
 echo "Checksum verified: $BG_SHA256"
 
-BG_BIN_DIR=".bg-deploy-run/$BG_VERSION/$BG_PLATFORM"
-rm -rf "$BG_BIN_DIR"
+BG_BIN_DIR="$BG_TMP/cli"
 mkdir -p "$BG_BIN_DIR"
 case "$BG_ARCHIVE" in
   *.tar.gz) tar -xzf "$BG_ARCHIVE_PATH" -C "$BG_BIN_DIR" ;;
@@ -228,7 +233,10 @@ esac
 
 BG_BIN="$BG_BIN_DIR/$BG_BINARY"
 [ -f "$BG_BIN" ] || bg_fail "The archive did not contain $BG_BINARY."
-chmod +x "$BG_BIN"
+
+# Executable by its owner only: the shell that extracts it is the shell that
+# runs it, and the directory is removed when this job ends.
+chmod 700 "$BG_BIN"
 
 echo "--- BehindGate deploy: deploying $BG_PATH"
 
@@ -312,22 +320,12 @@ BG_DEPLOYED_URL=$(bg_json url "$BG_OUT")
 
 if [ -z "$BG_RELEASE_ID" ] && [ -z "$BG_DEPLOYED_URL" ]; then
   echo "WARNING: bg-deploy reported success but its --json output could not be parsed, so" >&2
-  echo "WARNING: BEHINDGATE_RELEASE_ID and BEHINDGATE_URL will be empty. This usually means" >&2
-  echo "WARNING: the CLI changed its output contract; please open an issue." >&2
+  echo "WARNING: the release cannot be named below. The deploy itself succeeded. This" >&2
+  echo "WARNING: usually means the CLI changed its output contract; please open an issue." >&2
 fi
-
-# A dotenv report is the GitLab counterpart of an Action output: jobs that
-# `needs:` this one receive these as ordinary variables, and an `environment:`
-# override can use BEHINDGATE_URL as its dynamic url.
-{
-  printf 'BEHINDGATE_RELEASE_ID=%s\n' "$BG_RELEASE_ID"
-  printf 'BEHINDGATE_URL=%s\n' "$BG_DEPLOYED_URL"
-} >behindgate.env
 
 if [ -n "$BG_DEPLOYED_URL" ]; then
   echo "Deployed release ${BG_RELEASE_ID:-(unknown)} to $BG_DEPLOYED_URL"
 else
   echo "Deployed release ${BG_RELEASE_ID:-(unknown)}"
 fi
-
-rm -rf .bg-deploy-run

@@ -24,12 +24,12 @@ const { execFile } = require('node:child_process');
 const { startCaptureServer, fakeJwt } = require('../helpers/capture-server');
 const { startDownloadServer } = require('../helpers/download-server');
 const { acquireRealCli, makeSiteFixture } = require('../helpers/cli');
+const { listZipEntries } = require('../helpers/zip');
 
 const SCRIPT = path.join(__dirname, '..', '..', 'src', 'gitlab', 'deploy.sh');
 
 let skipReason = null;
 let downloads = null;
-let cliVersion = null;
 const workspaces = [];
 
 before(async () => {
@@ -43,8 +43,6 @@ before(async () => {
     skipReason = cli.skip;
     return;
   }
-
-  cliVersion = cli.version;
 
   // A throw in here is reported as cancelled subtests rather than as a failure,
   // which hides the reason completely. Turn it into a skip that names it.
@@ -108,24 +106,36 @@ function runComponent(cwd, env = {}) {
   });
 }
 
-function readDotenv(cwd) {
-  const file = path.join(cwd, 'behindgate.env');
-  if (!fs.existsSync(file)) return null;
+/**
+ * Every file under a directory, with its size and mode.
+ *
+ * The component promises never to write to the project directory, and a promise
+ * about the filesystem is only worth what a filesystem check says it is worth.
+ */
+function snapshot(dir) {
+  const entries = [];
 
-  return Object.fromEntries(
-    fs
-      .readFileSync(file, 'utf8')
-      .split('\n')
-      .filter(Boolean)
-      .map((line) => {
-        const at = line.indexOf('=');
-        return [line.slice(0, at), line.slice(at + 1)];
-      })
-  );
+  (function walk(absolute, relative) {
+    for (const entry of fs.readdirSync(absolute, { withFileTypes: true }).sort((a, b) =>
+      a.name.localeCompare(b.name)
+    )) {
+      const next = path.join(absolute, entry.name);
+      const key = path.posix.join(relative, entry.name);
+      if (entry.isDirectory()) {
+        entries.push(`dir  ${key}`);
+        walk(next, key);
+      } else {
+        const stat = fs.statSync(next);
+        entries.push(`file ${key} ${stat.size} ${(stat.mode & 0o777).toString(8)}`);
+      }
+    }
+  })(dir, '');
+
+  return entries;
 }
 
 describe('the GitLab component deploys', () => {
-  test('downloads the CLI, verifies it, deploys, and publishes a dotenv report', async (t) => {
+  test('downloads the CLI, verifies it, and deploys', async (t) => {
     if (skipReason) return t.skip(skipReason);
 
     const cwd = makeWorkspace();
@@ -138,50 +148,50 @@ describe('the GitLab component deploys', () => {
       assert.match(result.output, /Checksum verified/);
       assert.equal(capture.uploads.length, 1, 'expected exactly one upload');
 
-      const env = readDotenv(cwd);
-      assert.ok(env, 'behindgate.env was not written');
-      assert.equal(env.BEHINDGATE_RELEASE_ID, 'rel_test_0001');
-      assert.equal(env.BEHINDGATE_URL, 'https://demo.test.behindgate.net/my-app/');
+      // Reported to the log, written nowhere.
+      assert.match(result.output, /Deployed release rel_test_0001/);
+      assert.match(result.output, /https:\/\/demo\.test\.behindgate\.net\/my-app\//);
     } finally {
       await capture.close();
     }
   }, { timeout: 120000 });
 
-  test('reuses the cached archive on a second run without re-downloading', async (t) => {
+  test('leaves the project directory byte-for-byte untouched', async (t) => {
+    if (skipReason) return t.skip(skipReason);
+
+    // `path: .` deploys the project directory, so anything the component leaves
+    // behind is published as part of the site. That makes a stray scratch file a
+    // defect rather than an untidiness, and this is what catches one.
+    const cwd = makeWorkspace();
+    const capture = await startCaptureServer();
+    const before = snapshot(cwd);
+
+    try {
+      const result = await runComponent(cwd, { BG_URL: capture.url });
+
+      assert.equal(result.code, 0, `component failed:\n${result.output}`);
+      assert.equal(capture.uploads.length, 1, 'the deploy must still have happened');
+      assert.deepEqual(snapshot(cwd), before, 'the component wrote to the project directory');
+    } finally {
+      await capture.close();
+    }
+  }, { timeout: 120000 });
+
+  test('deploying the project directory itself uploads no scratch files', async (t) => {
     if (skipReason) return t.skip(skipReason);
 
     const cwd = makeWorkspace();
     const capture = await startCaptureServer();
 
     try {
-      await runComponent(cwd, { BG_URL: capture.url });
-      const before = downloads.requests.length;
+      const result = await runComponent(cwd, { BG_URL: capture.url, BG_PATH: '.' });
 
-      const second = await runComponent(cwd, { BG_URL: capture.url });
+      assert.equal(result.code, 0, `component failed:\n${result.output}`);
 
-      assert.equal(second.code, 0, `second run failed:\n${second.output}`);
-      assert.match(second.output, /Using the cached bg-deploy/);
-      assert.equal(
-        downloads.requests.length,
-        before,
-        'the cached archive still matched the pin, so nothing should have been fetched'
-      );
-    } finally {
-      await capture.close();
-    }
-  }, { timeout: 120000 });
-
-  test('leaves no extracted binary behind in the workspace', async (t) => {
-    if (skipReason) return t.skip(skipReason);
-
-    const cwd = makeWorkspace();
-    const capture = await startCaptureServer();
-
-    try {
-      await runComponent(cwd, { BG_URL: capture.url });
-
-      assert.ok(!fs.existsSync(path.join(cwd, '.bg-deploy-run')), 'the run directory was kept');
-      assert.ok(fs.existsSync(path.join(cwd, '.bg-deploy-cache')), 'the archive cache was dropped');
+      const names = listZipEntries(capture.uploads[0]);
+      const scratch = names.filter((name) => /bg-deploy|behindgate\.env/.test(name));
+      assert.deepEqual(scratch, [], `component scratch files were published: ${scratch}`);
+      assert.ok(names.includes('public/index.html'), `expected the site contents, got ${names}`);
     } finally {
       await capture.close();
     }
@@ -194,6 +204,7 @@ describe('the GitLab component refuses to run an unverified binary', () => {
 
     const cwd = makeWorkspace();
     const capture = await startCaptureServer();
+    const before = snapshot(cwd);
     downloads.corrupt = true;
 
     try {
@@ -202,13 +213,9 @@ describe('the GitLab component refuses to run an unverified binary', () => {
       assert.notEqual(result.code, 0, 'a tampered download must fail the job');
       assert.match(result.output, /Checksum verification failed/);
       assert.equal(capture.requests.length, 0, 'the CLI must never have run');
-      assert.ok(!fs.existsSync(path.join(cwd, 'behindgate.env')), 'no outputs may be published');
 
-      // The bad bytes must not survive as a cache entry, or the next run would
-      // fail identically with no way to recover short of clearing the cache.
-      const cached = path.join(cwd, '.bg-deploy-cache', cliVersion);
-      const leftovers = fs.existsSync(cached) ? fs.readdirSync(cached) : [];
-      assert.deepEqual(leftovers, [], 'the rejected archive was left in the cache');
+      // A rejected download must not survive anywhere the next job could reach.
+      assert.deepEqual(snapshot(cwd), before, 'the rejected archive was left behind');
     } finally {
       downloads.corrupt = false;
       await capture.close();
@@ -260,6 +267,45 @@ describe('the GitLab component fails early on bad configuration', () => {
     assert.match(result.stderr, /does not exist in the job workspace/);
     assert.equal(downloads.requests.length, before, 'the CLI must not be fetched for a bad path');
   });
+
+  test('applies the same token shape rule the Action does', async (t) => {
+    if (skipReason) return t.skip(skipReason);
+
+    // The component is shell running in someone else's pipeline, so it cannot
+    // import the Action's check and reimplements it. That is exactly the kind of
+    // duplicate that drifts, and a token one wrapper accepts while another
+    // rejects is a bug in one of them. The corpus below is the rule stated
+    // explicitly: three non-empty base64url segments.
+    //
+    // The token check runs before the path check, so a token the shell accepts
+    // gets as far as complaining about the path.
+    const corpus = [
+      ['a.b.c', true],
+      ['aaa.bbb.', true],
+      ['A-Z_a-z.0-9.sig', true],
+      ['x.y', false],
+      ['a.b.c.d', false],
+      ['a b.c.d', false],
+      ['a.b.c!', false],
+      ['.b.c', false],
+      ['a..c', false],
+    ];
+
+    for (const [value, accepted] of corpus) {
+      const result = await runComponent(makeWorkspace(), {
+        BEHINDGATE_TOKEN: value,
+        BG_PATH: 'no-such-dir',
+      });
+
+      const rejected = /not a well-formed JWT/.test(result.stderr);
+      assert.equal(
+        rejected,
+        !accepted,
+        `the shell verdict on ${JSON.stringify(value)} does not match the documented rule`
+      );
+      assert.ok(!result.output.includes(value), 'the token value must never be echoed');
+    }
+  }, { timeout: 60000 });
 
   test('an unpinned endpoint warns about what the job is trusting', async (t) => {
     if (skipReason) return t.skip(skipReason);

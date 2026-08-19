@@ -88,21 +88,11 @@ spec:
     BG_CLI_VERSION: $[[ inputs.cli-version ]]
     BG_DOWNLOAD_BASE_URL: $[[ inputs.download-base-url ]]
 
-  # Only the downloaded archive is cached, and it is re-hashed against the pin
-  # on every run before anything is extracted. A runner cache is shared and
-  # writable by other jobs, so a cached binary is not something to trust on
-  # sight -- but a cached archive that still matches the pin is exactly as
-  # trustworthy as a fresh download.
-  cache:
-    key: bg-deploy-archives
-    paths:
-      - .bg-deploy-cache/
-
-  # The GitLab counterpart of the Action's outputs. Jobs that `needs:` this one
-  # receive BEHINDGATE_RELEASE_ID and BEHINDGATE_URL as ordinary variables.
-  artifacts:
-    reports:
-      dotenv: behindgate.env
+  # No `cache:` and no `artifacts:`, deliberately. Both would have to name paths
+  # inside $CI_PROJECT_DIR, and this component writes nothing there -- `path: .`
+  # deploys that directory, so anything it left behind would be published as
+  # part of the site. The CLI is downloaded and unpacked under a temporary
+  # directory instead, and removed when the job ends.
 
   # A deploy on every branch is almost never what anyone wants. Override this
   # by redefining the job in your own .gitlab-ci.yml.

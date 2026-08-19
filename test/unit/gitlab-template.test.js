@@ -161,19 +161,22 @@ describe('the component contract', () => {
     assert.ok(!script.includes('$[[ inputs.'), 'no input may be interpolated into the script body');
   });
 
-  test('the job publishes a dotenv report, the GitLab analogue of an output', () => {
-    const template = read('templates/deploy.yml');
-    assert.match(template, /dotenv: behindgate\.env/);
-    assert.match(template, /BEHINDGATE_RELEASE_ID=/);
-    assert.match(template, /BEHINDGATE_URL=/);
+  test('the job declares nothing that would write to the project directory', () => {
+    // `cache:` and `artifacts:` can only name paths inside $CI_PROJECT_DIR, and
+    // `path: .` deploys that directory -- so anything either one produced would
+    // be published as part of the user's site. The component keeps its scratch
+    // files in a temporary directory instead.
+    const [, job] = read('templates/deploy.yml').split('\n---');
+
+    assert.ok(!/^\s{2}cache:/m.test(job), 'a cache would have to live in the project directory');
+    assert.ok(!/^\s{2}artifacts:/m.test(job), 'an artifact would have to live in the project directory');
+    assert.ok(!job.includes('behindgate.env'), 'no dotenv report may be written');
+    assert.ok(!job.includes('.bg-deploy-cache'), 'no scratch directory may be created');
   });
 
-  test('only the archive is cached, never the extracted binary', () => {
-    // A runner cache is shared and writable by other jobs, so a cached binary
-    // would be executed on trust. A cached archive is re-hashed against the pin
-    // on every run, which makes it exactly as trustworthy as a fresh download.
-    const template = read('templates/deploy.yml');
-    assert.match(template, /paths:\n\s+- \.bg-deploy-cache\/\n/);
-    assert.ok(!template.includes('- .bg-deploy-run'));
+  test('the script keeps its working files under a temporary directory', () => {
+    const script = read('src/gitlab/deploy.sh');
+    assert.match(script, /BG_TMP=\$\(mktemp -d\)/);
+    assert.match(script, /trap 'rm -rf "\$BG_TMP"' EXIT/);
   });
 });
