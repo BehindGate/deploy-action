@@ -174,9 +174,12 @@ describe('the component contract', () => {
     assert.ok(!job.includes('.bg-deploy-cache'), 'no scratch directory may be created');
   });
 
-  test('the script keeps its working files under a temporary directory', () => {
+  test('the script keeps its working files under a scratch directory it removes', () => {
     const script = read('src/gitlab/deploy.sh');
-    assert.match(script, /BG_TMP=\$\(mktemp -d\)/);
+
+    // Outside the project directory, and chosen rather than assumed: the CLI is
+    // executed from it, so it has to allow execution.
+    assert.match(script, /BG_TMP=\$\(bg_scratch "\$\{CI_BUILDS_DIR:-\}" "\$\{TMPDIR:-\/tmp\}"\)/);
     assert.match(script, /trap 'rm -rf "\$BG_TMP"' EXIT/);
   });
 });
