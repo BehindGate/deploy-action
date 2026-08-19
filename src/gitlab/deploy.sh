@@ -197,9 +197,58 @@ bg_download() {
   fi
 }
 
-# Everything this job creates lives here, outside the project directory, and is
-# removed on the way out.
-BG_TMP=$(mktemp -d)
+# A scratch directory outside the project directory, which the CLI is unpacked
+# into and executed from -- so it has to allow execution. /tmp is mounted noexec
+# on plenty of hardened runners, and the failure that produces is a bare
+# "Permission denied" from a binary that was just verified.
+#
+# $CI_BUILDS_DIR is tried first: it is the project directory's own parent, so the
+# runner already executes from that filesystem, and it is still outside the
+# checkout. Each candidate is proven by running something from it rather than
+# assumed.
+bg_scratch_in() {
+  bg_candidate=$(mktemp -d "$1/bg-deploy.XXXXXX" 2>/dev/null) || return 1
+
+  printf '#!/bin/sh\nexit 0\n' >"$bg_candidate/probe" 2>/dev/null || {
+    rm -rf "$bg_candidate"
+    return 1
+  }
+  chmod 700 "$bg_candidate/probe" 2>/dev/null || {
+    rm -rf "$bg_candidate"
+    return 1
+  }
+
+  if "$bg_candidate/probe" 2>/dev/null; then
+    rm -f "$bg_candidate/probe"
+    printf '%s' "$bg_candidate"
+    return 0
+  fi
+
+  rm -rf "$bg_candidate"
+  return 1
+}
+
+bg_scratch() {
+  for bg_base in "$@"; do
+    [ -n "$bg_base" ] || continue
+    [ -d "$bg_base" ] || continue
+    if bg_scratch_in "$bg_base"; then
+      return 0
+    fi
+  done
+  return 1
+}
+
+BG_TMP=$(bg_scratch "${CI_BUILDS_DIR:-}" "${TMPDIR:-/tmp}") || bg_fail \
+  'Found nowhere to unpack the CLI that allows execution.' \
+  '' \
+  "Tried \$CI_BUILDS_DIR (${CI_BUILDS_DIR:-unset}) and \${TMPDIR:-/tmp}." \
+  'Both were missing, unwritable, or mounted noexec.' \
+  '' \
+  'This component never writes to the project directory, so it needs one' \
+  'writable, exec-capable directory elsewhere. Set TMPDIR on the job to a' \
+  'location that qualifies.'
+
 trap 'rm -rf "$BG_TMP"' EXIT
 
 BG_ARCHIVE_PATH="$BG_TMP/$BG_ARCHIVE"

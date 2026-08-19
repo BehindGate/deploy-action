@@ -222,6 +222,48 @@ describe('the GitLab component refuses to run an unverified binary', () => {
     }
   }, { timeout: 120000 });
 
+  test('unpacks under CI_BUILDS_DIR when the temp filesystem is unusable', async (t) => {
+    if (skipReason) return t.skip(skipReason);
+
+    // The CLI is executed from wherever it is unpacked, so that directory has to
+    // allow execution. /tmp is mounted noexec on plenty of hardened runners.
+    // Pointing TMPDIR at nothing proves CI_BUILDS_DIR is genuinely tried first
+    // rather than merely listed.
+    const builds = fs.mkdtempSync(path.join(os.tmpdir(), 'bg-builds-'));
+    workspaces.push(builds);
+
+    const cwd = makeWorkspace();
+    const capture = await startCaptureServer();
+
+    try {
+      const result = await runComponent(cwd, {
+        BG_URL: capture.url,
+        CI_BUILDS_DIR: builds,
+        TMPDIR: path.join(builds, 'no-such-tmpdir'),
+      });
+
+      assert.equal(result.code, 0, `component failed:\n${result.output}`);
+      assert.equal(capture.uploads.length, 1);
+      assert.deepEqual(fs.readdirSync(builds), [], 'the scratch directory was not cleaned up');
+    } finally {
+      await capture.close();
+    }
+  }, { timeout: 120000 });
+
+  test('says so when nowhere allows execution', async (t) => {
+    if (skipReason) return t.skip(skipReason);
+
+    const missing = path.join(os.tmpdir(), 'bg-nowhere-that-exists');
+    const result = await runComponent(makeWorkspace(), {
+      CI_BUILDS_DIR: missing,
+      TMPDIR: missing,
+    });
+
+    assert.notEqual(result.code, 0);
+    assert.match(result.stderr, /Found nowhere to unpack the CLI that allows execution/);
+    assert.match(result.stderr, /mounted noexec/);
+  }, { timeout: 60000 });
+
   test('a version with no pinned checksum is refused rather than downloaded', async (t) => {
     if (skipReason) return t.skip(skipReason);
 

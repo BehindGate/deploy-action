@@ -93,6 +93,15 @@ exists to solve, one level up.
 | `download-base-url` | no | `https://app.behindgate.com` | Host to download the CLI from. Override only for non-production environments. |
 | `stage` | no | `deploy` | Stage the job runs in. |
 | `image` | no | `alpine:3.22` | Image the job runs in. Needs a POSIX shell, `tar`, `mktemp`, and `curl` or `wget`. |
+
+The job also needs one writable, **exec-capable** directory outside the project
+directory to unpack the CLI into. It tries `$CI_BUILDS_DIR` first — the project
+directory's own parent, so the runner already executes from that filesystem —
+then `$TMPDIR` or `/tmp`. Each candidate is proven by running something from it,
+because `/tmp` is mounted `noexec` on plenty of hardened runners and the failure
+that produces is a bare "Permission denied" from a binary that was just
+verified. If neither qualifies the job says so and names both; set `TMPDIR` on
+the job to somewhere that does.
 | `job-name` | no | `behindgate-deploy` | Name of the generated job. |
 
 ## It never writes to your project directory
