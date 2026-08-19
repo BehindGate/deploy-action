@@ -69,6 +69,15 @@ describe('environments', () => {
     }
   });
 
+  test('only prod is described by the committed pins', () => {
+    // versions.json was captured from production, which publishes a version once.
+    // Test republishes, so a pin there describes a build until someone rebuilds
+    // it -- the CLI is verified against the host's own manifest instead.
+    assert.equal(ENVIRONMENTS.prod.pinnedCli, true);
+    assert.equal(ENVIRONMENTS.test.pinnedCli, false);
+    assert.equal(resolveEnvironment('').pinnedCli, true);
+  });
+
   test("prod's download host is the one the pinned checksums came from", () => {
     // A checksum only means something relative to whoever served it. If
     // versions.json ever moves its default host, `env: prod` must move with it

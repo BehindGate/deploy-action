@@ -16,6 +16,11 @@
  * not a usable endpoint.
  *
  * Downloads, by contrast, hang off the bare host: `<host>/downloads/<version>/`.
+ *
+ * `pinnedCli` records whether `versions.json` describes what a host serves. The
+ * committed checksums were captured from production, and production publishes a
+ * version once; test republishes, so a pin there describes the build for as long
+ * as it takes someone to rebuild it. See `docs/MAINTAINERS.md`.
  */
 
 class UnknownEnvironmentError extends Error {
@@ -37,11 +42,13 @@ const ENVIRONMENTS = Object.freeze({
     name: 'prod',
     deployUrl: 'https://app.behindgate.com/api/deploy',
     downloadBaseUrl: 'https://app.behindgate.com',
+    pinnedCli: true,
   }),
   test: Object.freeze({
     name: 'test',
     deployUrl: 'https://app.test.behindgate.net/api/deploy',
     downloadBaseUrl: 'https://app.test.behindgate.net',
+    pinnedCli: false,
   }),
 });
 
@@ -60,7 +67,7 @@ function knownEnvironments() {
  * production would send a build to an environment the caller did not name.
  *
  * @param {string} [value]
- * @returns {{name: string, deployUrl: string, downloadBaseUrl: string}}
+ * @returns {{name: string, deployUrl: string, downloadBaseUrl: string, pinnedCli: boolean}}
  */
 function resolveEnvironment(value) {
   const requested = String(value ?? '').trim();

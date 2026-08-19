@@ -76,6 +76,23 @@ function resolveArtifact(version, platform, table = DEFAULT_TABLE) {
 }
 
 /**
+ * The archive and binary names for a platform, by the vendor's convention.
+ *
+ * `resolveArtifact` reads these from the pin table, which is the right answer
+ * whenever the version is pinned. This derives them instead, for the one case
+ * that has no entry to read: a host serving a build newer than anything
+ * committed here. A unit test holds the convention to every pinned entry, so a
+ * rename upstream fails here rather than as a 404 mid-deploy.
+ */
+function artifactNames(platform) {
+  const windows = String(platform).startsWith('windows-');
+  return {
+    archive: `bg-deploy-${platform}.${windows ? 'zip' : 'tar.gz'}`,
+    binary: windows ? 'bg-deploy.exe' : 'bg-deploy',
+  };
+}
+
+/**
  * Normalise a vendor version string into valid semver, or null if it cannot be.
  *
  * This exists because tool caches key on semver, and BehindGate's version
@@ -124,15 +141,49 @@ function indexUrl(baseUrl) {
   return `${String(baseUrl).replace(/\/+$/, '')}/downloads/index.json`;
 }
 
+/** URL of the checksum manifest a host serves beside one version's archives. */
+function checksumsUrl(baseUrl, version) {
+  const trimmed = String(baseUrl).replace(/\/+$/, '');
+  return `${trimmed}/downloads/${version}/SHA256SUMS.txt`;
+}
+
+/**
+ * The tool-cache key for a build, as version plus the digest that identifies it.
+ *
+ * A version alone is enough where a version is published once and never again.
+ * It is not enough on a host that republishes: the cache would hand back the
+ * previous build under the same key, and the run would silently use bytes the
+ * host has since replaced -- the one thing re-downloading was supposed to catch.
+ *
+ * The digest goes in a PRERELEASE segment rather than semver build metadata:
+ * `semver.clean`, which the tool cache applies to whatever it is given, keeps a
+ * prerelease and discards build metadata. `2026.8.5+sha.abc` would land in the
+ * same cache entry as `2026.8.5`, which is exactly the collision being avoided.
+ *
+ * @returns {string|null} null when the version cannot be normalised, as before
+ */
+function cacheKey(version, sha256) {
+  const normalized = semverSafeVersion(version);
+  if (!normalized) return null;
+
+  const digest = String(sha256 ?? '').trim().toLowerCase();
+  if (!/^[0-9a-f]{12,}$/.test(digest)) return normalized;
+
+  return `${normalized}-sha.${digest.slice(0, 12)}`;
+}
+
 module.exports = {
   DEFAULT_TABLE,
   defaultVersion,
   defaultDownloadBaseUrl,
   knownVersions,
   resolveArtifact,
+  artifactNames,
   semverSafeVersion,
+  cacheKey,
   downloadUrl,
   indexUrl,
+  checksumsUrl,
   UnknownVersionError,
   UnknownPlatformError,
 };

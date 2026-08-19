@@ -180,6 +180,40 @@ The input still has to be declared in `action.yml`: passing an undeclared input
 makes the runner log "Unexpected input(s)" on every run, which is worse than a
 terse description.
 
+### How the CLI is resolved per environment
+
+`versions.json` describes production, and only production. Each environment
+carries a `pinnedCli` flag saying so, and it decides where the CLI's version and
+checksum come from:
+
+| | Version | Checksum | Verified against |
+| --- | --- | --- | --- |
+| `prod` | `defaultVersion`, or `cli-version` | `versions.json` | a hash committed here |
+| `test` | the host's `/downloads/index.json`, or `cli-version` | the host's `SHA256SUMS.txt` | a file the same host serves |
+
+Test republishes builds under the same version string. On 2026-08-16 the
+`2026.8.5` linux-amd64 archive changed from `7d4250e0df0b` to `e566ce5c86a7`
+inside three hours. A committed pin cannot survive that, and there is no
+schedule that could re-capture it fast enough, so the choice on that host is
+between the host's own manifest and no verification at all.
+
+Be clear about what the manifest is worth: the host serves both the binary and
+the file describing it, so it proves the download arrived intact and nothing
+more. That is why production does not use it, and why the run warns whenever
+this path is taken. It still catches the failure that actually happens on a
+republishing host -- a truncated or half-published archive.
+
+The tool cache is keyed on **version plus digest** (`2026.8.5-sha.e566ce5c86a7`)
+wherever the version is not pinned. A key of version alone would hand back the
+build that was replaced, and a cache hit is indistinguishable from a fast run.
+The digest rides in a semver *prerelease* segment on purpose: `semver.clean`,
+which the tool cache applies, keeps a prerelease and discards build metadata, so
+`2026.8.5+sha.…` would collapse into the same entry as `2026.8.5`. A unit test
+pins that, against the same copy of semver the tool cache resolves.
+
+`node script/checksums.js verify` and the `checksums` CI job are unchanged: they
+describe production, which is the only thing `versions.json` claims to describe.
+
 ## The preview inputs run ahead of the pinned CLI
 
 `site-url`, `create-app` and `delete-app` map onto CLI flags added in
@@ -190,9 +224,11 @@ users one `cli-version:` away from a 403, and `bump` never overwrites an existin
 entry, so a hand-added key would also stop the weekly job adopting the production
 build under the same name.
 
-So the inputs ship first and start working when
-[`cli-update.yml`](../.github/workflows/cli-update.yml) adopts 2026.8.5 from the
-production host. No change to this Action is needed then. Until it lands:
+So the inputs ship first and start working on production when
+[`cli-update.yml`](../.github/workflows/cli-update.yml) adopts 2026.8.5 there. No
+change to this Action is needed then. On `env: test` they work already, since
+that environment takes whatever version the host reports as current. Until the
+production pin lands:
 
 - `test/integration/preview.test.js` skips itself, detecting the flags from
   `--help` rather than from a version string;

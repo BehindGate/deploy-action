@@ -23,8 +23,56 @@ const { verifyFileChecksum } = require('./core/checksum');
 const { parseDeployJson, parseErrorMessage } = require('./core/parse');
 const { describeExitCode, EXIT_SUCCESS } = require('./core/errors');
 const { resolveInputs, ConfigurationError } = require('./core/inputs');
+const manifest = require('./core/manifest');
 
 const TOOL_NAME = 'bg-deploy';
+
+/** Fetch a small text document, failing with the URL rather than a bare error. */
+async function fetchText(url, what) {
+  let response;
+
+  try {
+    response = await fetch(url);
+  } catch (error) {
+    throw new Error(`Could not reach the ${what} at ${url}: ${error.message}`);
+  }
+
+  if (!response.ok) {
+    throw new Error(`Could not read the ${what} at ${url}: HTTP ${response.status}`);
+  }
+
+  return response.text();
+}
+
+/**
+ * Resolve which build to download, and the digest to hold it to.
+ *
+ * Two sources, and which one applies is a property of the environment rather
+ * than of the caller:
+ *
+ * PINNED (production). The version and its digest both come from `versions.json`,
+ * committed here, where changing either takes a reviewed commit. This is the
+ * guarantee the Action is built around and it does not move.
+ *
+ * HOST-SERVED (test). Test republishes builds, so a committed digest describes
+ * one for about as long as it takes to rebuild it, and a version newer than
+ * anything committed has no entry at all. The version comes from the host's
+ * release index and the digest from the SHA256SUMS.txt beside the archive.
+ *
+ * That is a weaker check and it is labelled as one wherever it is used: a
+ * manifest served by the host it describes cannot detect a host serving a
+ * modified build. It still catches the failure that actually happens there --
+ * a truncated or half-published archive -- and the alternative on that host is
+ * not a pin, it is no check at all.
+ */
+async function resolveArtifact({ version, platform, baseUrl, pinned }) {
+  if (pinned) {
+    const artifact = versions.resolveArtifact(version || versions.defaultVersion(), platform);
+    return { ...artifact, verifiedAgainst: 'versions.json' };
+  }
+
+  return manifest.resolveHostArtifact({ baseUrl, platform, version, fetchText });
+}
 
 /**
  * Download, verify, and cache the CLI. Returns the path to the executable.
@@ -32,27 +80,38 @@ const TOOL_NAME = 'bg-deploy';
  * Verification happens on the downloaded archive BEFORE extraction, so a
  * tampered archive is never unpacked onto the runner.
  */
-async function acquireCli({ version, platform, baseUrl }) {
-  const artifact = versions.resolveArtifact(version, platform);
+async function acquireCli({ version, platform, baseUrl, pinned = true }) {
+  const artifact = await resolveArtifact({ version, platform, baseUrl, pinned });
+  const resolvedVersion = artifact.version;
 
   // The tool cache keys on semver, and the vendor's version strings are not
   // valid semver (`2026.07.1`). Store and look up under a normalised value, or
   // the lookup silently misses and every run re-downloads the CLI.
-  const cacheVersion = versions.semverSafeVersion(version);
+  //
+  // Where the version is not pinned, the digest joins the key: the host can
+  // republish a version, and a cache keyed on the version alone would keep
+  // serving the build it replaced.
+  const cacheVersion = pinned
+    ? versions.semverSafeVersion(resolvedVersion)
+    : versions.cacheKey(resolvedVersion, artifact.sha256);
 
   const cached = cacheVersion ? tc.find(TOOL_NAME, cacheVersion, platform) : '';
   if (cached) {
-    core.info(`Using cached bg-deploy ${version} (${platform}) from ${cached}`);
-    return path.join(cached, artifact.binary);
+    core.info(`Using cached bg-deploy ${resolvedVersion} (${platform}) from ${cached}`);
+    return {
+      binary: path.join(cached, artifact.binary),
+      version: resolvedVersion,
+      verifiedAgainst: artifact.verifiedAgainst,
+    };
   }
 
-  const url = versions.downloadUrl(baseUrl, version, artifact.archive);
-  core.info(`Downloading bg-deploy ${version} (${platform}) from ${url}`);
+  const url = versions.downloadUrl(baseUrl, resolvedVersion, artifact.archive);
+  core.info(`Downloading bg-deploy ${resolvedVersion} (${platform}) from ${url}`);
 
   const archivePath = await tc.downloadTool(url);
 
   await verifyFileChecksum(archivePath, artifact.sha256, { source: url });
-  core.info(`Checksum verified against versions.json: ${artifact.sha256}`);
+  core.info(`Checksum verified against ${artifact.verifiedAgainst}: ${artifact.sha256}`);
 
   const extractedDir = artifact.archive.endsWith('.zip')
     ? await tc.extractZip(archivePath)
@@ -63,8 +122,8 @@ async function acquireCli({ version, platform, baseUrl }) {
     installDir = await tc.cacheDir(extractedDir, TOOL_NAME, cacheVersion, platform);
   } else {
     core.warning(
-      `bg-deploy version "${version}" cannot be normalised to semver, so it ` +
-        `cannot be cached and will be downloaded again on every run.`
+      `bg-deploy version "${resolvedVersion}" cannot be normalised to semver, so ` +
+        `it cannot be cached and will be downloaded again on every run.`
     );
   }
 
@@ -74,7 +133,7 @@ async function acquireCli({ version, platform, baseUrl }) {
     fs.chmodSync(binary, 0o755);
   }
 
-  return binary;
+  return { binary, version: resolvedVersion, verifiedAgainst: artifact.verifiedAgainst };
 }
 
 /**
@@ -127,6 +186,7 @@ async function writeSummary({
   deployPath,
   siteUrl,
   version,
+  verifiedAgainst,
   deleteApp,
   deleted,
 }) {
@@ -156,7 +216,16 @@ async function writeSummary({
     if (siteUrl) {
       rows.push([{ data: 'Target', header: true }, { data: siteUrl }]);
     }
-    rows.push([{ data: 'CLI', header: true }, { data: `bg-deploy ${version}` }]);
+    rows.push([
+      { data: 'CLI', header: true },
+      {
+        data:
+          `bg-deploy ${version} ` +
+          (verifiedAgainst === 'versions.json'
+            ? '(checksum pinned in <code>versions.json</code>)'
+            : `(checksum from the host's own manifest, not a pin)`),
+      },
+    ]);
     rows.push([
       { data: 'Endpoint', header: true },
       { data: `${endpoint || 'unknown'} (pinned via ${endpointSource})` },
@@ -208,10 +277,26 @@ async function run() {
   if (deployPath) validatePath(deployPath);
   if (!usesToken) requireOidcAvailable();
 
-  const version = core.getInput('cli-version').trim() || versions.defaultVersion();
-
   const platform = resolvePlatform();
-  const binary = await acquireCli({ version, platform, baseUrl: inputs.downloadBaseUrl });
+  const pinnedCli = inputs.environment.pinnedCli;
+
+  const cli = await acquireCli({
+    version: core.getInput('cli-version').trim(),
+    platform,
+    baseUrl: inputs.downloadBaseUrl,
+    pinned: pinnedCli,
+  });
+
+  if (!pinnedCli) {
+    core.warning(
+      `The CLI was verified against the checksum manifest ${cli.verifiedAgainst} ` +
+        `rather than against the checksums committed in versions.json. That host ` +
+        `serves both the binary and the manifest, so the check proves the download ` +
+        `arrived intact, not that the build is the one this repository reviewed. ` +
+        `This applies to the ${inputs.environment.name} environment, whose builds ` +
+        `are republished too often for a committed pin to describe them.`
+    );
+  }
 
   core.info(
     usesToken
@@ -239,7 +324,7 @@ async function run() {
     delete childEnv.BEHINDGATE_TOKEN;
   }
 
-  const exitCode = await exec.exec(binary, args, {
+  const exitCode = await exec.exec(cli.binary, args, {
     ignoreReturnCode: true,
     silent: true,
     env: childEnv,
@@ -305,7 +390,8 @@ async function run() {
     endpointSource,
     deployPath,
     siteUrl,
-    version: parsed?.version || version,
+    version: parsed?.version || cli.version,
+    verifiedAgainst: cli.verifiedAgainst,
     deleteApp: inputs.deleteApp,
     deleted: parsed?.deleted,
   });
