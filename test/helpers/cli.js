@@ -11,7 +11,7 @@
 const fs = require('node:fs');
 const os = require('node:os');
 const path = require('node:path');
-const { execFileSync } = require('node:child_process');
+const { execFileSync, spawnSync } = require('node:child_process');
 
 const versions = require('../../src/core/versions');
 const { verifyFileChecksum } = require('../../src/core/checksum');
@@ -20,11 +20,33 @@ const { resolvePlatform } = require('../../src/core/platform');
 const TMP_DIR = path.join(__dirname, '..', '.tmp');
 
 /**
+ * Where tar(1) is looked for, as absolute paths.
+ *
+ * Naming the bare command would resolve it through PATH, which is inherited from
+ * whatever invoked the tests -- so an entry earlier in PATH decides what runs
+ * just before a downloaded binary is unpacked and executed. Both runners we test
+ * on ship /usr/bin/tar.
+ */
+const TAR_PATHS = ['/usr/bin/tar', '/bin/tar'];
+
+/**
  * @returns {Promise<{binary: string} | {skip: string}>}
  */
 async function acquireRealCli() {
   if (process.platform === 'win32') {
     return { skip: 'integration tests use tar(1); not run on Windows' };
+  }
+
+  // Escape hatch for testing against a build that has no pin yet -- a release
+  // published to the test environment ahead of production has no checksum in
+  // versions.json, so it cannot be fetched through the path above:
+  //
+  //   BG_CLI_BINARY=/path/to/bg-deploy npm run test:integration
+  //
+  // Test-only. Nothing in src/ has an equivalent: the Action never runs an
+  // unverified binary.
+  if (process.env.BG_CLI_BINARY) {
+    return { binary: process.env.BG_CLI_BINARY };
   }
 
   let platform;
@@ -42,34 +64,94 @@ async function acquireRealCli() {
   const binary = path.join(installDir, artifact.binary);
   if (fs.existsSync(binary)) return { binary };
 
-  fs.mkdirSync(installDir, { recursive: true });
+  fs.mkdirSync(TMP_DIR, { recursive: true });
 
-  // Version-scoped: archive names are identical across releases, so caching by
-  // bare name means a stale download from a previous version fails verification
-  // against the new pin -- which looks like a checksum failure, not a stale file.
-  const archivePath = path.join(TMP_DIR, `${version}-${artifact.archive}`);
+  // `node --test` runs test FILES in parallel, so several processes reach this
+  // at once on a cold cache. Everything below is therefore written inside a
+  // private staging directory and published with a single rename: a partially
+  // written archive is never hashed, and a partially extracted binary is never
+  // exec'd (which surfaced as `spawn ETXTBSY`, naming nothing resembling its
+  // cause). mkdtemp rather than a name built from the pid: it creates the
+  // directory exclusively, so the path cannot be pre-empted by a symlink.
+  const staging = fs.mkdtempSync(path.join(TMP_DIR, 'staging-'));
 
-  if (!fs.existsSync(archivePath)) {
-    const url = versions.downloadUrl(baseUrl, version, artifact.archive);
-    let response;
+  try {
+    // Version-scoped: archive names are identical across releases, so caching by
+    // bare name means a stale download from a previous version fails
+    // verification against the new pin -- which looks like a checksum failure,
+    // not a stale file.
+    const archivePath = path.join(TMP_DIR, `${version}-${artifact.archive}`);
+
+    if (!fs.existsSync(archivePath)) {
+      const url = versions.downloadUrl(baseUrl, version, artifact.archive);
+      let response;
+      try {
+        response = await fetch(url);
+      } catch (error) {
+        return { skip: `could not reach ${url}: ${error.message}` };
+      }
+      if (!response.ok) {
+        return { skip: `could not download ${url}: HTTP ${response.status}` };
+      }
+      const partial = path.join(staging, artifact.archive);
+      fs.writeFileSync(partial, Buffer.from(await response.arrayBuffer()));
+      fs.renameSync(partial, archivePath);
+    }
+
+    // Same verification the Action performs, against the same committed table.
+    await verifyFileChecksum(archivePath, artifact.sha256, { source: baseUrl });
+
+    const tar = TAR_PATHS.find((candidate) => fs.existsSync(candidate));
+    if (!tar) {
+      return { skip: `no tar(1) found at ${TAR_PATHS.join(' or ')}` };
+    }
+
+    const extracted = path.join(staging, 'cli');
+    fs.mkdirSync(extracted);
+    execFileSync(tar, ['-xzf', archivePath, '-C', extracted]);
+    // Owner-only: the binary is executed by this process and nothing else has
+    // any business reading, let alone running, a freshly downloaded executable.
+    fs.chmodSync(path.join(extracted, artifact.binary), 0o700);
+
     try {
-      response = await fetch(url);
-    } catch (error) {
-      return { skip: `could not reach ${url}: ${error.message}` };
+      fs.renameSync(extracted, installDir);
+    } catch {
+      // Another process published first. Its copy is the same verified bytes.
     }
-    if (!response.ok) {
-      return { skip: `could not download ${url}: HTTP ${response.status}` };
-    }
-    fs.writeFileSync(archivePath, Buffer.from(await response.arrayBuffer()));
+  } finally {
+    fs.rmSync(staging, { recursive: true, force: true });
   }
 
-  // Same verification the Action performs, against the same committed table.
-  await verifyFileChecksum(archivePath, artifact.sha256, { source: baseUrl });
-
-  execFileSync('tar', ['-xzf', archivePath, '-C', installDir]);
-  fs.chmodSync(binary, 0o755);
-
   return { binary };
+}
+
+/**
+ * Whether the acquired CLI understands the preview flags.
+ *
+ * `--site-url`, `--create-app` and `--delete-app` arrived in 2026.8.5. An older
+ * CLI rejects them as unknown flags (exit 2), so the preview tests skip rather
+ * than fail until the pinned default catches up. Read from `--help` rather than
+ * from the version string: the flags are the contract, the number is a label.
+ *
+ * @returns {string|null} a skip reason, or null when the flags are supported
+ */
+function previewSupport(binary) {
+  // Both streams: the CLI writes its usage to stderr, and only --json output is
+  // ever promised on stdout.
+  const help = spawnSync(binary, ['--help'], { encoding: 'utf8' });
+  const text = `${help.stdout || ''}${help.stderr || ''}`;
+
+  const missing = ['--site-url', '--create-app', '--delete-app'].filter(
+    (flag) => !text.includes(flag)
+  );
+  if (!missing.length) return null;
+
+  const version = spawnSync(binary, ['--version'], { encoding: 'utf8' });
+  return (
+    `${`${version.stdout || ''}${version.stderr || ''}`.trim()} has no ` +
+    `${missing.join(', ')}; the preview flow needs 2026.8.5. Run against a ` +
+    `pre-release build with BG_CLI_BINARY=/path/to/bg-deploy.`
+  );
 }
 
 /** A throwaway static site: index.html at the top, plus a nested asset. */
@@ -82,4 +164,4 @@ function makeSiteFixture(name = 'site') {
   return { root, site };
 }
 
-module.exports = { acquireRealCli, makeSiteFixture, TMP_DIR };
+module.exports = { acquireRealCli, previewSupport, makeSiteFixture, TMP_DIR };

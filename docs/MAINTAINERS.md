@@ -150,6 +150,104 @@ same commit if the new version should become the default.
 Confirm the version string with `bg-deploy --version`, which prints e.g.
 `bg-deploy 2026.07.1 (git 79f1f9f)`.
 
+## The undocumented `env` input
+
+`env` selects the BehindGate environment and resolves the two addresses that have
+to agree — the deploy endpoint and the host the CLI is downloaded from:
+
+| `env` | Deploy endpoint | CLI downloads |
+| --- | --- | --- |
+| `prod` (default) | `https://app.behindgate.com/api/deploy/releases` | `https://app.behindgate.com` |
+| `test` | `https://app.test.behindgate.net/api/deploy/releases` | `https://app.test.behindgate.net` |
+
+Anything else fails the step rather than falling back to the default, which would
+deploy to an environment nobody named. `url` and `download-base-url` each win
+over it, independently: overriding the endpoint leaves downloads on the
+environment's host.
+
+**It is deliberately absent from the README**, because the test environment is
+BehindGate's own and not somewhere a user of this Action deploys. `url` and
+`download-base-url` are the documented way to reach any other endpoint, and they
+cover every case a user has. Keep it that way when editing the README: the table
+above, `action.yml`, and `src/core/environments.js` are where it is written down.
+
+Nothing user-facing names the input either. The endpoint is reported in the log
+and the job summary as "pinned via the `url` input" or "pinned via the prod
+default", and the exit-2 guidance in `src/core/errors.js` talks about the
+endpoint rather than about `env`. Check that when changing those messages.
+
+The input still has to be declared in `action.yml`: passing an undeclared input
+makes the runner log "Unexpected input(s)" on every run, which is worse than a
+terse description.
+
+### How the CLI is resolved per environment
+
+`versions.json` describes production, and only production. Each environment
+carries a `pinnedCli` flag saying so, and it decides where the CLI's version and
+checksum come from:
+
+| | Which build | Checksum | Verified against |
+| --- | --- | --- | --- |
+| `prod` | `defaultVersion`, or `cli-version` | `versions.json` | a hash committed here |
+| `test` | the host's unversioned `/downloads/`, or `cli-version` | the host's `SHA256SUMS.txt` | a file the same host serves |
+
+Test republishes builds under the same version string. On 2026-08-16 the
+`2026.8.5` linux-amd64 archive changed from `7d4250e0df0b` to `e566ce5c86a7`
+inside three hours. A committed pin cannot survive that, and there is no
+schedule that could re-capture it fast enough, so the choice on that host is
+between the host's own manifest and no verification at all.
+
+Be clear about what the manifest is worth: the host serves both the binary and
+the file describing it, so it proves the download arrived intact and nothing
+more. That is why production does not use it, and why the run warns whenever
+this path is taken. It still catches the failure that actually happens on a
+republishing host -- a truncated or half-published archive.
+
+Without `cli-version`, both the archive and its manifest are read from the
+host's **unversioned** paths -- `/downloads/SHA256SUMS.txt` and
+`/downloads/<archive>` -- which is the only question worth asking a host that
+republishes: what are you serving now? It also means no URL is built from
+anything a remote document said, which is what the quality gate objected to when
+the version came from `/downloads/index.json`. Such a build has no version until
+the CLI reports its own in `--json` output, so it is identified by its digest,
+and the job log calls it `(current build e566ce5c86a7)`.
+
+The tool cache is keyed on **version plus digest** (`2026.8.5-sha.e566ce5c86a7`),
+or on the digest alone (`0.0.0-sha.e566ce5c86a7`) for a build with no version. A key of version alone would hand back the
+build that was replaced, and a cache hit is indistinguishable from a fast run.
+The digest rides in a semver *prerelease* segment on purpose: `semver.clean`,
+which the tool cache applies, keeps a prerelease and discards build metadata, so
+`2026.8.5+sha.…` would collapse into the same entry as `2026.8.5`. A unit test
+pins that, against the same copy of semver the tool cache resolves.
+
+`node script/checksums.js verify` and the `checksums` CI job are unchanged: they
+describe production, which is the only thing `versions.json` claims to describe.
+
+## The preview inputs run ahead of the pinned CLI
+
+`site-url`, `create-app` and `delete-app` map onto CLI flags added in
+**2026.8.5**, which at the time of writing is published on the test host only —
+production still serves 2026.8.4, and `/downloads/2026.8.5/` there answers 403.
+Nothing was pinned for it: adding a test-host-captured entry would put production
+users one `cli-version:` away from a 403, and `bump` never overwrites an existing
+entry, so a hand-added key would also stop the weekly job adopting the production
+build under the same name.
+
+So the inputs ship first and start working on production when
+[`cli-update.yml`](../.github/workflows/cli-update.yml) adopts 2026.8.5 there. No
+change to this Action is needed then. On `env: test` they work already, since
+that environment takes whatever version the host reports as current. Until the
+production pin lands:
+
+- `test/integration/preview.test.js` skips itself, detecting the flags from
+  `--help` rather than from a version string;
+- `BG_CLI_BINARY=/path/to/bg-deploy npm run test:integration` runs it against a
+  build fetched by hand. That escape hatch is test-only — the Action itself never
+  runs an unverified binary.
+
+Drop the skip only when it stops firing on its own; a skipping preview suite is
+the signal that the pin has not caught up yet.
+
 ## Hosts are per-environment
 
 BehindGate serves downloads from a different host per environment — production

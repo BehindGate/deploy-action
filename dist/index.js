@@ -28280,6 +28280,141 @@ module.exports = {
 
 /***/ }),
 
+/***/ 7295:
+/***/ ((module) => {
+
+"use strict";
+
+
+/**
+ * The BehindGate environments this Action knows how to talk to.
+ *
+ * Pure, dependency-free: no `@actions/*` imports.
+ *
+ * Two addresses have to agree for a deploy to work, and until now the caller
+ * had to keep them in sync by hand: the deploy endpoint the CLI uploads to, and
+ * the host the CLI itself is downloaded from. They are not the same URL and one
+ * is not derivable from the other by string surgery, so both are spelled out.
+ *
+ * The deploy endpoint is the RELEASES collection, `/api/deploy/releases`. The
+ * CLI posts to `--url` exactly as given to create a release and appends the
+ * release id to poll it, and it derives the sibling routes by trimming that last
+ * segment -- `/api/deploy/oidc/token` for the credential exchange, `/api/deploy/apps`
+ * to resolve `--site-url`, `/api/deploy/publish` to publish. Naming the parent
+ * instead puts release creation on the wrong route, and the bare host is worse
+ * still: it is fronted by a CDN that answers a POST with 403 text/html.
+ *
+ * Downloads, by contrast, hang off the bare host: `<host>/downloads/<version>/`.
+ *
+ * `pinnedCli` records whether `versions.json` describes what a host serves. The
+ * committed checksums were captured from production, and production publishes a
+ * version once; test republishes, so a pin there describes the build for as long
+ * as it takes someone to rebuild it. See `docs/MAINTAINERS.md`.
+ */
+
+class UnknownEnvironmentError extends Error {
+  constructor(value, known) {
+    super(
+      `Unknown \`env\` input "${value}". ` +
+        `Valid values: ${known.join(', ')}. ` +
+        `The environment selects both the deploy endpoint and the host the CLI ` +
+        `is downloaded from, so an unrecognised value is refused rather than ` +
+        `falling back to a default and deploying somewhere you did not ask for.`
+    );
+    this.name = 'UnknownEnvironmentError';
+    this.value = value;
+  }
+}
+
+const ENVIRONMENTS = Object.freeze({
+  prod: Object.freeze({
+    name: 'prod',
+    deployUrl: 'https://app.behindgate.com/api/deploy/releases',
+    downloadBaseUrl: 'https://app.behindgate.com',
+    pinnedCli: true,
+  }),
+  test: Object.freeze({
+    name: 'test',
+    deployUrl: 'https://app.test.behindgate.net/api/deploy/releases',
+    downloadBaseUrl: 'https://app.test.behindgate.net',
+    pinnedCli: false,
+  }),
+});
+
+const DEFAULT_ENVIRONMENT = 'prod';
+
+/**
+ * The origins this Action will read CLI metadata from.
+ *
+ * Only consulted where the checksum comes from the download host itself. There
+ * the host both serves the archive and declares its digest, so it can hand over
+ * any bytes it likes together with a digest that matches -- which is tolerable
+ * from a host named in this file and reviewed with it, and not from one a
+ * workflow input picked. Where the digest is pinned in `versions.json` the host
+ * has no such say, and `download-base-url` may point anywhere.
+ */
+const KNOWN_DOWNLOAD_ORIGINS = Object.freeze(
+  Object.values(ENVIRONMENTS).map((environment) => new URL(environment.downloadBaseUrl).origin)
+);
+
+/**
+ * Whether a URL belongs to a download host this repository names.
+ *
+ * Compares the ORIGIN, so scheme, host and port all have to match: an http://
+ * spelling of a known host is a different origin and is refused with the rest.
+ */
+function isKnownDownloadOrigin(url) {
+  let origin;
+
+  try {
+    origin = new URL(String(url)).origin;
+  } catch {
+    return false;
+  }
+
+  return KNOWN_DOWNLOAD_ORIGINS.includes(origin);
+}
+
+/** The environment names accepted by the `env` input. */
+function knownEnvironments() {
+  return Object.keys(ENVIRONMENTS);
+}
+
+/**
+ * Resolve the `env` input to its two URLs.
+ *
+ * An empty value is the unset input and resolves to the default. Anything else
+ * unrecognised throws: silently treating `env: staging` or `env: production` as
+ * production would send a build to an environment the caller did not name.
+ *
+ * @param {string} [value]
+ * @returns {{name: string, deployUrl: string, downloadBaseUrl: string, pinnedCli: boolean}}
+ */
+function resolveEnvironment(value) {
+  const requested = String(value ?? '').trim();
+  if (!requested) return ENVIRONMENTS[DEFAULT_ENVIRONMENT];
+
+  const environment = ENVIRONMENTS[requested.toLowerCase()];
+  if (!environment) {
+    throw new UnknownEnvironmentError(requested, knownEnvironments());
+  }
+
+  return environment;
+}
+
+module.exports = {
+  ENVIRONMENTS,
+  DEFAULT_ENVIRONMENT,
+  KNOWN_DOWNLOAD_ORIGINS,
+  isKnownDownloadOrigin,
+  knownEnvironments,
+  resolveEnvironment,
+  UnknownEnvironmentError,
+};
+
+
+/***/ }),
+
 /***/ 6938:
 /***/ ((module) => {
 
@@ -28317,11 +28452,11 @@ const EXIT_USAGE = EXIT_CONFIG;
  * Turn an exit code into an actionable failure message.
  *
  * @param {number} code
- * @param {{path?: string, urlPinned?: boolean, cliMessage?: string|null}} [context]
+ * @param {{path?: string, usesToken?: boolean, cliMessage?: string|null}} [context]
  * @returns {{title: string, detail: string}}
  */
 function describeExitCode(code, context = {}) {
-  const { path, urlPinned = false, cliMessage = null } = context;
+  const { path, usesToken = true, cliMessage = null } = context;
   const reported = cliMessage ? `\nbg-deploy reported: ${cliMessage}\n` : '';
 
   if (code === EXIT_SUCCESS) {
@@ -28331,34 +28466,47 @@ function describeExitCode(code, context = {}) {
   if (code === EXIT_CONFIG) {
     const lines = ['bg-deploy rejected the request as misconfigured (exit 2).', reported];
 
-    // This Action validates the token's shape and the path before invoking the
-    // CLI, so the causes it could have caught are already ruled out. What is
-    // left is overwhelmingly the endpoint check -- and that one is security
-    // relevant, so it leads.
-    if (urlPinned) {
+    // Without a token the job authenticated as itself, so none of the
+    // secret-shaped causes apply and the endpoint check is not the likely one
+    // either: the trust decides what this repository may do.
+    if (!usesToken) {
+      lines.push(
+        'This job authenticated as itself rather than with a deploy token, so ' +
+          'check that:',
+        '  - the job grants `permissions: id-token: write` (without it there is ' +
+          'no OIDC token to exchange),',
+        '  - the workspace has a CI trust for this repository ' +
+          '(Settings -> CI trusts),',
+        '  - that trust holds the permission the run needs -- "create apps" for ' +
+          '`create-app`, "delete apps" for `delete-app`, and it must cover the ' +
+          'site named by `site-url`, and',
+        '  - `site-url` names a real site, with the path naming the app.'
+      );
+    }
+    // With a token, the endpoint is always pinned and the token's shape and the
+    // path are checked before the CLI runs, so the mismatch leads -- it is both
+    // the likeliest remaining cause and the security-relevant one. It is not the
+    // only one, though: a token can simply have stopped working, and describing
+    // that as a mismatch would send the reader after the wrong thing.
+    else {
       lines.push(
         'Because this Action already checks the token format and the path ' +
-          'before running, the most likely cause is that the `url` input does ' +
-          'not match the endpoint your token was minted for. Since 2026.8.x the ' +
-          'CLI refuses to deploy on that mismatch rather than silently ' +
+          'before running, the most likely cause is that the pinned endpoint ' +
+          'does not match the endpoint your token was minted for. Since 2026.8.x ' +
+          'the CLI refuses to deploy on that mismatch rather than silently ' +
           'preferring one of them.',
         '',
         'That refusal is the desired behaviour: a token whose endpoint claim ' +
-          'disagrees with your pinned `url` is exactly what a swapped secret ' +
+          'disagrees with the pinned endpoint is exactly what a swapped secret ' +
           'looks like. Check that:',
-        '  - `url` names the endpoint shown when you deploy without it, and',
-        '  - the token really was issued for that environment ' +
-          '(a test-environment token cannot deploy to production).'
-      );
-    } else {
-      lines.push(
-        'Check that:',
-        '  - the secret referenced by `token:` exists and is non-empty ' +
-          '(an unset secret interpolates to an empty string rather than ' +
-          'failing the workflow),',
-        '  - the workflow is not running from a fork, where secrets are ' +
-          'unavailable by design,',
-        '  - the token has not expired or been revoked.'
+        '  - the endpoint is the one your token was issued for -- a token minted ' +
+          'against one environment cannot deploy to another, and the endpoint ' +
+          'defaults to production, and',
+        '  - `url`, where you set it, names that endpoint exactly.',
+        '',
+        'If the endpoint is right, the credential itself is the other candidate: ' +
+          'check that the token has not expired or been revoked, and mint a new ' +
+          'one under Settings -> Deploy tokens if it has.'
       );
     }
 
@@ -28406,6 +28554,378 @@ module.exports = {
 
 /***/ }),
 
+/***/ 2240:
+/***/ ((module, __unused_webpack_exports, __nccwpck_require__) => {
+
+"use strict";
+
+
+/**
+ * Turn the Action's raw string inputs into a CLI invocation.
+ *
+ * Pure, dependency-free: no `@actions/*` imports and no filesystem access, so
+ * the planned Bitbucket Pipe and GitLab component can reuse the same rules and
+ * the whole input contract is unit-testable without a runner.
+ *
+ * Everything here is about catching a misconfiguration before the CLI is even
+ * downloaded. The CLI rejects these combinations too, but it does so as a bare
+ * `exit 2` whose message has to be read out of a log; naming the *inputs* that
+ * conflict is the part only this layer can do.
+ */
+
+const { resolveEnvironment } = __nccwpck_require__(7295);
+
+/** A configuration error the caller can fix by editing their workflow. */
+class ConfigurationError extends Error {
+  constructor(message) {
+    super(message);
+    this.name = 'ConfigurationError';
+  }
+}
+
+function trim(value) {
+  return String(value ?? '').trim();
+}
+
+/**
+ * Parse a boolean input.
+ *
+ * Deliberately strict. `create-app: yes` and `delete-app: 1` are the kind of
+ * thing that looks like it works, and a `delete-app` silently read as false
+ * leaves preview apps behind forever while the job goes green.
+ */
+function parseBoolean(name, value, fallback = false) {
+  const raw = trim(value);
+  if (!raw) return fallback;
+
+  const normalized = raw.toLowerCase();
+  if (normalized === 'true') return true;
+  if (normalized === 'false') return false;
+
+  throw new ConfigurationError(
+    `The \`${name}\` input must be \`true\` or \`false\`, not "${raw}".`
+  );
+}
+
+/**
+ * A BehindGate deploy token is a JWT. Checking the shape here separates a
+ * malformed secret from a genuine deploy failure -- the CLI reports both as
+ * exit 2 with a message that has to be read out of the log. The token value
+ * itself never appears in the message.
+ */
+function looksLikeJwt(token) {
+  const segments = token.split('.');
+  return (
+    segments.length === 3 &&
+    segments[0].length > 0 &&
+    segments[1].length > 0 &&
+    segments.every((segment) => /^[A-Za-z0-9_-]*$/.test(segment))
+  );
+}
+
+/**
+ * Resolve the inputs into everything needed to run the CLI.
+ *
+ * @param {{env?: string, url?: string, downloadBaseUrl?: string, token?: string,
+ *          path?: string, siteUrl?: string, createApp?: string|boolean,
+ *          deleteApp?: string|boolean}} raw
+ * @returns {{environment: object, deployUrl: string, endpointSource: string,
+ *           downloadBaseUrl: string, token: string, usesToken: boolean,
+ *           siteUrl: string, createApp: boolean, deleteApp: boolean,
+ *           deployPath: string, args: string[], warnings: string[]}}
+ */
+function resolveInputs(raw = {}) {
+  const environment = resolveEnvironment(raw.env);
+
+  const url = trim(raw.url);
+  const downloadBaseUrl = trim(raw.downloadBaseUrl);
+  const token = trim(raw.token);
+  const siteUrl = trim(raw.siteUrl);
+  const deployPath = trim(raw.path);
+  const createApp = parseBoolean('create-app', raw.createApp);
+  const deleteApp = parseBoolean('delete-app', raw.deleteApp);
+
+  const warnings = [];
+
+  // `url` and `download-base-url` win over `env`. They predate it, they are what
+  // a local or dev endpoint is reached through, and an explicit value must never
+  // be quietly replaced by one derived from a shorthand.
+  const deployUrl = url || environment.deployUrl;
+  // Short enough to drop into a log line or a summary cell as-is. It names the
+  // `url` input but never `env`, which is undocumented on purpose -- see
+  // docs/MAINTAINERS.md.
+  const endpointSource = url ? 'the `url` input' : `the ${environment.name} default`;
+
+  if (token && siteUrl) {
+    throw new ConfigurationError(
+      [
+        'Pass either `token` or `site-url`, not both.',
+        '',
+        'A deploy token already names the site and the app it deploys to, so ' +
+          'there is nothing left for `site-url` to select. The two describe the ' +
+          'same thing and would have to agree; rather than guess which one you ' +
+          'meant, this fails now instead of deploying to whichever the CLI ' +
+          'happens to prefer.',
+        '',
+        'Deploying to a fixed app: keep `token` and drop `site-url`. Naming the ' +
+          'target per run (which is what a per-pull-request preview needs): drop ' +
+          '`token`, grant `permissions: id-token: write`, and let the job ' +
+          'authenticate as itself.',
+      ].join('\n')
+    );
+  }
+
+  if (token && (createApp || deleteApp)) {
+    const flag = createApp ? 'create-app' : 'delete-app';
+    throw new ConfigurationError(
+      [
+        `\`${flag}\` cannot be used with \`token\`.`,
+        '',
+        'A deploy token is pinned to one app that already exists, so it can ' +
+          'neither create another nor delete the one it names. Both need the job ' +
+          'to authenticate as itself against a CI trust that holds those ' +
+          'permissions.',
+        '',
+        'Remove `token:`, grant `permissions: id-token: write` to the job, and ' +
+          'give the workspace a CI trust for this repository ' +
+          '(Settings -> CI trusts).',
+      ].join('\n')
+    );
+  }
+
+  if (createApp && deleteApp) {
+    throw new ConfigurationError(
+      'Set either `create-app` or `delete-app`, not both. `delete-app` tears ' +
+        'the app down and exits without deploying, so combining them cannot ' +
+        'express anything.'
+    );
+  }
+
+  if ((createApp || deleteApp) && !siteUrl) {
+    const flag = createApp ? 'create-app' : 'delete-app';
+    throw new ConfigurationError(
+      `\`${flag}\` needs \`site-url\`, which is what names the app to ` +
+        `${createApp ? 'create' : 'delete'}: the host names the site and the ` +
+        `path names the app. Without it there is no target, and for ` +
+        `\`delete-app\` in particular the Action will not guess at one.`
+    );
+  }
+
+  if (token && !looksLikeJwt(token)) {
+    throw new ConfigurationError(
+      [
+        'The `token` input is not a well-formed JWT.',
+        '',
+        'A BehindGate deploy token has three base64url segments separated by ' +
+          'dots (header.payload.signature). The value supplied does not, which ' +
+          'usually means it was truncated, wrapped across lines, or quoted when ' +
+          'it was stored as a secret.',
+        '',
+        'Re-copy the token from the workspace dashboard under ' +
+          'Settings -> Deploy tokens.',
+      ].join('\n')
+    );
+  }
+
+  if (!deleteApp && !deployPath) {
+    throw new ConfigurationError(
+      'The `path` input is required: it names the folder to deploy, or an ' +
+        'existing .zip to upload as-is. Only `delete-app: true` can go without ' +
+        'one, since a teardown uploads nothing.'
+    );
+  }
+
+  if (deleteApp && deployPath) {
+    warnings.push(
+      'Both `delete-app` and `path` are set. A teardown uploads nothing, so ' +
+        '`path` is ignored.'
+    );
+  }
+
+  const args = ['-y', '--json', '--url', deployUrl];
+
+  if (siteUrl) args.push('--site-url', siteUrl);
+  if (createApp) args.push('--create-app');
+  if (deleteApp) args.push('--delete-app');
+  // The CLI takes the path last, and takes none at all for a teardown.
+  if (!deleteApp) args.push(deployPath);
+
+  return {
+    environment,
+    deployUrl,
+    endpointSource,
+    downloadBaseUrl: downloadBaseUrl || environment.downloadBaseUrl,
+    token,
+    usesToken: Boolean(token),
+    siteUrl,
+    createApp,
+    deleteApp,
+    deployPath: deleteApp ? '' : deployPath,
+    args,
+    warnings,
+  };
+}
+
+module.exports = {
+  ConfigurationError,
+  parseBoolean,
+  looksLikeJwt,
+  resolveInputs,
+};
+
+
+/***/ }),
+
+/***/ 6732:
+/***/ ((module, __unused_webpack_exports, __nccwpck_require__) => {
+
+"use strict";
+
+
+/**
+ * Parsing of what the download host publishes about its own builds: the
+ * release index and the SHA256SUMS.txt served beside each version.
+ *
+ * Pure, dependency-free: no `@actions/*` imports and no network access. The
+ * caller fetches; this only reads.
+ *
+ * WHAT THIS IS AND IS NOT. A checksum served by the same host as the binary it
+ * describes proves only that the download arrived intact -- anyone able to serve
+ * a modified binary can serve a matching line beside it. That is exactly why
+ * `versions.json` exists and why production verifies against it instead.
+ *
+ * This is for the test environment, whose builds are republished often enough
+ * that a committed pin describes them for hours at a time. The choice there is
+ * not "pinned or host-served"; it is "host-served or nothing", and a truncated
+ * or half-published archive is the failure that actually happens.
+ */
+
+const versions = __nccwpck_require__(2200);
+
+/** ` at <source>`, or nothing. Kept out of the messages so they stay readable. */
+function at(source) {
+  return source ? ` at ${source}` : '';
+}
+
+class MalformedChecksumsError extends Error {
+  constructor(source) {
+    super(
+      `Could not read any checksum from the manifest${at(source)}. ` +
+        `Expected lines of "<64 hex digits>  <filename>". Refusing to run a ` +
+        `download that nothing describes.`
+    );
+    this.name = 'MalformedChecksumsError';
+  }
+}
+
+class ChecksumNotListedError extends Error {
+  constructor(archive, listed, source) {
+    super(
+      `The manifest${at(source)} has no entry for ${archive}. ` +
+        `It lists: ${listed.join(', ') || '(nothing)'}. ` +
+        `The host is serving a build for this platform that it does not describe, ` +
+        `so there is nothing to verify the download against.`
+    );
+    this.name = 'ChecksumNotListedError';
+    this.archive = archive;
+  }
+}
+
+/** One `<digest>  <name>` line, in the format sha256sum(1) writes. */
+const LINE = /^([0-9a-f]{64})\s+\*?(\S+)$/i;
+
+/**
+ * Parse a SHA256SUMS.txt into `{ filename: digest }`.
+ *
+ * Unreadable lines are skipped rather than fatal -- a comment or a trailing
+ * blank line should not cost the whole manifest -- but a file that yields no
+ * entries at all is an error, since that is what an HTML error page served with
+ * a 200 looks like.
+ *
+ * @throws {MalformedChecksumsError}
+ */
+function parseChecksums(text, { source } = {}) {
+  const entries = {};
+
+  for (const line of String(text ?? '').split('\n')) {
+    const match = LINE.exec(line.trim());
+    if (match) entries[match[2]] = match[1].toLowerCase();
+  }
+
+  if (!Object.keys(entries).length) throw new MalformedChecksumsError(source);
+
+  return entries;
+}
+
+/**
+ * The digest a manifest gives for one archive.
+ *
+ * @throws {MalformedChecksumsError|ChecksumNotListedError}
+ * @returns {string} lowercase hex digest
+ */
+function checksumFor(text, archive, { source } = {}) {
+  const entries = parseChecksums(text, { source });
+  const digest = entries[archive];
+
+  if (!digest) {
+    throw new ChecksumNotListedError(archive, Object.keys(entries), source);
+  }
+
+  return digest;
+}
+
+/**
+ * Resolve, from the host itself, which build to download and the digest to hold
+ * it to.
+ *
+ * `fetchText(url, what)` is injected rather than imported so this module stays
+ * free of any transport of its own, and so a test can point it at a local
+ * server without a network.
+ *
+ * @returns {Promise<{version: string, platform: string, archive: string, binary: string, sha256: string, verifiedAgainst: string}>}
+ */
+async function resolveHostArtifact({ baseUrl, platform, version, fetchText }) {
+  const requested = String(version ?? '').trim();
+  const names = versions.artifactNames(platform);
+
+  // Without a requested version, both URLs are the host's unversioned ones:
+  // "whatever you are serving now". That is the only question worth asking an
+  // environment that republishes, and it keeps every URL built from constants --
+  // no document the host serves gets to decide which URL is fetched next.
+  const source = requested
+    ? versions.checksumsUrl(baseUrl, requested)
+    : versions.currentChecksumsUrl(baseUrl);
+
+  const sha256 = checksumFor(await fetchText(source, 'checksum manifest'), names.archive, {
+    source,
+  });
+
+  return {
+    // Null where the build is the host's current one: it has no version until
+    // the CLI reports its own, and the digest below is what identifies it.
+    version: requested || null,
+    platform,
+    archive: names.archive,
+    binary: names.binary,
+    sha256,
+    downloadUrl: requested
+      ? versions.downloadUrl(baseUrl, requested, names.archive)
+      : versions.currentDownloadUrl(baseUrl, names.archive),
+    verifiedAgainst: source,
+  };
+}
+
+module.exports = {
+  parseChecksums,
+  checksumFor,
+  resolveHostArtifact,
+  MalformedChecksumsError,
+  ChecksumNotListedError,
+};
+
+
+/***/ }),
+
 /***/ 4234:
 /***/ ((module) => {
 
@@ -28427,7 +28947,7 @@ module.exports = {
  * Reference stdout from a successful run (bg-deploy 2026.8.3):
  *
  *   {"releaseId":"rel_01J8ZQ","url":"https://demo.behindgate.com/my-app/",
- *    "endpoint":"https://app.behindgate.com/api/deploy","status":"published",
+ *    "endpoint":"https://app.behindgate.com/api/deploy/releases","status":"published",
  *    "version":"2026.8.3"}
  */
 
@@ -28474,7 +28994,12 @@ function extractJson(stdout) {
  * than publish empty outputs as if they were real. Absent individual fields
  * come back as null rather than undefined, so the shape is stable.
  *
- * @returns {{releaseId: string|null, url: string|null, endpoint: string|null, status: string|null, version: string|null}|null}
+ * A teardown (`--delete-app`) reports a different object -- no release and no
+ * deployed address, but a `path` and a `deleted` flag. `deleted` is false when
+ * there was no app at that path, which is a success: a teardown job has to be
+ * safe to re-run.
+ *
+ * @returns {{releaseId: string|null, url: string|null, endpoint: string|null, status: string|null, version: string|null, path: string|null, deleted: boolean|null}|null}
  */
 function parseDeployJson(stdout) {
   const parsed = extractJson(stdout);
@@ -28488,6 +29013,8 @@ function parseDeployJson(stdout) {
     endpoint: str(parsed.endpoint),
     status: str(parsed.status),
     version: str(parsed.version),
+    path: str(parsed.path),
+    deleted: typeof parsed.deleted === 'boolean' ? parsed.deleted : null,
   };
 }
 
@@ -28693,6 +29220,23 @@ function resolveArtifact(version, platform, table = DEFAULT_TABLE) {
 }
 
 /**
+ * The archive and binary names for a platform, by the vendor's convention.
+ *
+ * `resolveArtifact` reads these from the pin table, which is the right answer
+ * whenever the version is pinned. This derives them instead, for the one case
+ * that has no entry to read: a host serving a build newer than anything
+ * committed here. A unit test holds the convention to every pinned entry, so a
+ * rename upstream fails here rather than as a 404 mid-deploy.
+ */
+function artifactNames(platform) {
+  const windows = String(platform).startsWith('windows-');
+  return {
+    archive: `bg-deploy-${platform}.${windows ? 'zip' : 'tar.gz'}`,
+    binary: windows ? 'bg-deploy.exe' : 'bg-deploy',
+  };
+}
+
+/**
  * Normalise a vendor version string into valid semver, or null if it cannot be.
  *
  * This exists because tool caches key on semver, and BehindGate's version
@@ -28719,6 +29263,71 @@ function semverSafeVersion(version) {
 }
 
 /**
+ * Versions that may be spliced into a URL path.
+ *
+ * A version reaches these builders from a workflow input or, on an unpinned
+ * environment, from the host's own release index -- so it is remote data
+ * steering the next request. Anything outside this shape is refused rather than
+ * escaped: `latest: "../../elsewhere"` is not a version, and treating it as one
+ * would fetch a path nobody named.
+ *
+ * The character set is deliberately one that percent-encoding leaves untouched,
+ * so validating and encoding cannot disagree about what the segment is.
+ */
+const URL_SAFE_VERSION = /^[A-Za-z0-9][A-Za-z0-9._~-]{0,63}$/;
+
+class UnsafeVersionError extends Error {
+  constructor(version) {
+    super(
+      `"${version}" is not a usable bg-deploy version. Expected letters, ` +
+        `digits, dots, hyphens, underscores or tildes (up to 64 characters), ` +
+        `such as 2026.8.5. A value outside that cannot be part of a download ` +
+        `URL, since it would change which path is fetched.`
+    );
+    this.name = 'UnsafeVersionError';
+    this.version = version;
+  }
+}
+
+/** Whether a version can be used as a URL path segment. */
+function isUrlSafeVersion(version) {
+  return URL_SAFE_VERSION.test(String(version ?? ''));
+}
+
+/**
+ * The version as a URL path segment: matched against the pattern, then encoded.
+ *
+ * What is returned is the MATCH rather than the argument. The two are the same
+ * string, and taking it from the match is what makes the guarantee local: the
+ * value that goes into a URL provably came from the pattern above, with no
+ * reliance on a caller having checked anything first.
+ *
+ * @throws {UnsafeVersionError}
+ */
+function versionSegment(version) {
+  const matched = URL_SAFE_VERSION.exec(String(version ?? ''));
+  if (!matched) throw new UnsafeVersionError(version);
+
+  return encodeURIComponent(matched[0]);
+}
+
+/**
+ * Drop any trailing slashes from a base URL.
+ *
+ * A loop rather than `replace(/\/+$/, '')`: the regex form backtracks, so its
+ * runtime grows super-linearly with a long run of slashes, and these base URLs
+ * come from a workflow input. The result is identical and the cost is not.
+ */
+function withoutTrailingSlash(value) {
+  const text = String(value);
+
+  let end = text.length;
+  while (end > 0 && text.charAt(end - 1) === '/') end -= 1;
+
+  return text.slice(0, end);
+}
+
+/**
  * Build the download URL for an archive.
  *
  * Versioned and immutable: `/downloads/<version>/<archive>`. Until 2026.8.x the
@@ -28732,13 +29341,67 @@ function semverSafeVersion(version) {
  * the same host), so hardcoding one would break every non-production user.
  */
 function downloadUrl(baseUrl, version, archive) {
-  const trimmed = String(baseUrl).replace(/\/+$/, '');
-  return `${trimmed}/downloads/${version}/${archive}`;
+  return `${withoutTrailingSlash(baseUrl)}/downloads/${versionSegment(version)}/${archive}`;
+}
+
+/**
+ * URL of the archive a host is serving RIGHT NOW, with no version in the path.
+ *
+ * The versioned paths above name a specific release. These name whatever the
+ * host currently publishes, which is the only thing an environment that
+ * republishes can be asked for -- and it takes no version, so nothing a remote
+ * document said can decide which URL is fetched.
+ */
+function currentDownloadUrl(baseUrl, archive) {
+  return `${withoutTrailingSlash(baseUrl)}/downloads/${archive}`;
+}
+
+/** URL of the checksum manifest for whatever the host is serving right now. */
+function currentChecksumsUrl(baseUrl) {
+  return `${withoutTrailingSlash(baseUrl)}/downloads/SHA256SUMS.txt`;
 }
 
 /** URL of the published release index (`{latest, versions: [...]}`). */
 function indexUrl(baseUrl) {
-  return `${String(baseUrl).replace(/\/+$/, '')}/downloads/index.json`;
+  return `${withoutTrailingSlash(baseUrl)}/downloads/index.json`;
+}
+
+/** URL of the checksum manifest a host serves beside one version's archives. */
+function checksumsUrl(baseUrl, version) {
+  return `${withoutTrailingSlash(baseUrl)}/downloads/${versionSegment(version)}/SHA256SUMS.txt`;
+}
+
+/**
+ * The tool-cache key for a build, as version plus the digest that identifies it.
+ *
+ * A version alone is enough where a version is published once and never again.
+ * It is not enough on a host that republishes: the cache would hand back the
+ * previous build under the same key, and the run would silently use bytes the
+ * host has since replaced -- the one thing re-downloading was supposed to catch.
+ *
+ * The digest goes in a PRERELEASE segment rather than semver build metadata:
+ * `semver.clean`, which the tool cache applies to whatever it is given, keeps a
+ * prerelease and discards build metadata. `2026.8.5+sha.abc` would land in the
+ * same cache entry as `2026.8.5`, which is exactly the collision being avoided.
+ *
+ * @returns {string|null} null when the version cannot be normalised, as before
+ */
+function cacheKey(version, sha256) {
+  const digest = String(sha256 ?? '').trim().toLowerCase();
+  const identified = /^[0-9a-f]{12,}$/.test(digest);
+
+  // A build taken from the host's unversioned path has no version to key on --
+  // its identity IS its digest. `0.0.0` carries no claim about which release it
+  // is; the digest that follows is what distinguishes one build from the next.
+  if (version === null || version === undefined || version === '') {
+    return identified ? `0.0.0-sha.${digest.slice(0, 12)}` : null;
+  }
+
+  const normalized = semverSafeVersion(version);
+  if (!normalized) return null;
+  if (!identified) return normalized;
+
+  return `${normalized}-sha.${digest.slice(0, 12)}`;
 }
 
 module.exports = {
@@ -28747,9 +29410,18 @@ module.exports = {
   defaultDownloadBaseUrl,
   knownVersions,
   resolveArtifact,
+  artifactNames,
   semverSafeVersion,
+  cacheKey,
+  withoutTrailingSlash,
+  isUrlSafeVersion,
+  versionSegment,
+  UnsafeVersionError,
   downloadUrl,
+  currentDownloadUrl,
   indexUrl,
+  checksumsUrl,
+  currentChecksumsUrl,
   UnknownVersionError,
   UnknownPlatformError,
 };
@@ -28785,8 +29457,86 @@ const versions = __nccwpck_require__(2200);
 const { verifyFileChecksum } = __nccwpck_require__(8226);
 const { parseDeployJson, parseErrorMessage } = __nccwpck_require__(4234);
 const { describeExitCode, EXIT_SUCCESS } = __nccwpck_require__(6938);
+const { resolveInputs, ConfigurationError } = __nccwpck_require__(2240);
+const { isKnownDownloadOrigin, KNOWN_DOWNLOAD_ORIGINS } = __nccwpck_require__(7295);
+const manifest = __nccwpck_require__(6732);
 
 const TOOL_NAME = 'bg-deploy';
+
+/** Fetch a small text document, failing with the URL rather than a bare error. */
+async function fetchText(url, what) {
+  // This is only reached where the checksum comes from the host rather than
+  // from versions.json, so the host decides both what the bytes are and what
+  // they should hash to. Restricting the request to an origin named in
+  // src/core/environments.js is what keeps `download-base-url` from nominating
+  // an arbitrary host for that pair. Checked here, immediately before the
+  // request, rather than somewhere upstream that a later caller could bypass.
+  if (!isKnownDownloadOrigin(url)) {
+    throw new ConfigurationError(
+      [
+        `Refusing to read the ${what} from ${url}.`,
+        '',
+        'On this environment the CLI is verified against the checksum manifest ' +
+          'the download host serves, so that host is trusted to describe its own ' +
+          'build. Only the hosts named in this Action may be: ' +
+          `${KNOWN_DOWNLOAD_ORIGINS.join(', ')}.`,
+        '',
+        'To download the CLI from anywhere else, pin its checksums in ' +
+          'versions.json and use an environment that verifies against them.',
+      ].join('\n')
+    );
+  }
+
+  let response;
+
+  try {
+    response = await fetch(url);
+  } catch (error) {
+    throw new Error(`Could not reach the ${what} at ${url}: ${error.message}`);
+  }
+
+  if (!response.ok) {
+    throw new Error(`Could not read the ${what} at ${url}: HTTP ${response.status}`);
+  }
+
+  return response.text();
+}
+
+/**
+ * Resolve which build to download, and the digest to hold it to.
+ *
+ * Two sources, and which one applies is a property of the environment rather
+ * than of the caller:
+ *
+ * PINNED (production). The version and its digest both come from `versions.json`,
+ * committed here, where changing either takes a reviewed commit. This is the
+ * guarantee the Action is built around and it does not move.
+ *
+ * HOST-SERVED (test). Test republishes builds, so a committed digest describes
+ * one for about as long as it takes to rebuild it, and a version newer than
+ * anything committed has no entry at all. Both the archive and its digest come
+ * from the host's unversioned paths -- "whatever you are serving now" -- so the
+ * build is identified by that digest rather than by a version number.
+ *
+ * That is a weaker check and it is labelled as one wherever it is used: a
+ * manifest served by the host it describes cannot detect a host serving a
+ * modified build. It still catches the failure that actually happens there --
+ * a truncated or half-published archive -- and the alternative on that host is
+ * not a pin, it is no check at all.
+ */
+async function resolveArtifact({ version, platform, baseUrl, pinned }) {
+  if (pinned) {
+    const resolved = version || versions.defaultVersion();
+    const artifact = versions.resolveArtifact(resolved, platform);
+    return {
+      ...artifact,
+      downloadUrl: versions.downloadUrl(baseUrl, resolved, artifact.archive),
+      verifiedAgainst: 'versions.json',
+    };
+  }
+
+  return manifest.resolveHostArtifact({ baseUrl, platform, version, fetchText });
+}
 
 /**
  * Download, verify, and cache the CLI. Returns the path to the executable.
@@ -28794,27 +29544,41 @@ const TOOL_NAME = 'bg-deploy';
  * Verification happens on the downloaded archive BEFORE extraction, so a
  * tampered archive is never unpacked onto the runner.
  */
-async function acquireCli({ version, platform, baseUrl }) {
-  const artifact = versions.resolveArtifact(version, platform);
+async function acquireCli({ version, platform, baseUrl, pinned = true }) {
+  const artifact = await resolveArtifact({ version, platform, baseUrl, pinned });
+  const resolvedVersion = artifact.version;
+
+  // The host's current build has no version until the CLI reports its own, so
+  // the digest stands in for one everywhere a human reads it.
+  const label = resolvedVersion || `(current build ${artifact.sha256.slice(0, 12)})`;
 
   // The tool cache keys on semver, and the vendor's version strings are not
   // valid semver (`2026.07.1`). Store and look up under a normalised value, or
   // the lookup silently misses and every run re-downloads the CLI.
-  const cacheVersion = versions.semverSafeVersion(version);
+  //
+  // Where the build is not pinned, the digest joins the key -- or replaces it
+  // outright for a build taken from the unversioned path. A key that ignored the
+  // digest would keep serving the build the host has since replaced.
+  const cacheVersion = pinned
+    ? versions.semverSafeVersion(resolvedVersion)
+    : versions.cacheKey(resolvedVersion, artifact.sha256);
 
   const cached = cacheVersion ? tc.find(TOOL_NAME, cacheVersion, platform) : '';
   if (cached) {
-    core.info(`Using cached bg-deploy ${version} (${platform}) from ${cached}`);
-    return path.join(cached, artifact.binary);
+    core.info(`Using cached bg-deploy ${label} (${platform}) from ${cached}`);
+    return {
+      binary: path.join(cached, artifact.binary),
+      version: label,
+      verifiedAgainst: artifact.verifiedAgainst,
+    };
   }
 
-  const url = versions.downloadUrl(baseUrl, version, artifact.archive);
-  core.info(`Downloading bg-deploy ${version} (${platform}) from ${url}`);
+  core.info(`Downloading bg-deploy ${label} (${platform}) from ${artifact.downloadUrl}`);
 
-  const archivePath = await tc.downloadTool(url);
+  const archivePath = await tc.downloadTool(artifact.downloadUrl);
 
-  await verifyFileChecksum(archivePath, artifact.sha256, { source: url });
-  core.info(`Checksum verified against versions.json: ${artifact.sha256}`);
+  await verifyFileChecksum(archivePath, artifact.sha256, { source: artifact.downloadUrl });
+  core.info(`Checksum verified against ${artifact.verifiedAgainst}: ${artifact.sha256}`);
 
   const extractedDir = artifact.archive.endsWith('.zip')
     ? await tc.extractZip(archivePath)
@@ -28825,8 +29589,8 @@ async function acquireCli({ version, platform, baseUrl }) {
     installDir = await tc.cacheDir(extractedDir, TOOL_NAME, cacheVersion, platform);
   } else {
     core.warning(
-      `bg-deploy version "${version}" cannot be normalised to semver, so it ` +
-        `cannot be cached and will be downloaded again on every run.`
+      `bg-deploy ${label} cannot be given a cache key, so it will be downloaded ` +
+        `again on every run.`
     );
   }
 
@@ -28836,62 +29600,37 @@ async function acquireCli({ version, platform, baseUrl }) {
     fs.chmodSync(binary, 0o755);
   }
 
-  return binary;
+  return { binary, version: label, verifiedAgainst: artifact.verifiedAgainst };
 }
 
 /**
- * Fail early on an empty token with a message that names the real cause.
+ * Fail early when the job cannot mint an OIDC token.
  *
- * An unset secret interpolates to an empty string rather than failing the
- * workflow, so this is by far the most common way the step goes wrong.
+ * Without `token` the CLI authenticates as the job itself, which needs the
+ * Actions token service -- and that is only reachable when the workflow grants
+ * `id-token: write`. The CLI's own failure names the missing permission, but it
+ * cannot know that the *other* likely cause is a `token:` whose secret was never
+ * set: an unset secret interpolates to an empty string rather than failing the
+ * workflow, and an empty token now selects this mode instead of failing.
  */
-function validateToken(rawToken) {
-  const token = rawToken.trim();
+function requireOidcAvailable() {
+  if (process.env.ACTIONS_ID_TOKEN_REQUEST_URL) return;
 
-  if (!token) {
-    throw new Error(
-      [
-        'The `token` input is empty.',
-        '',
-        'A secret that is not set interpolates to an empty string rather than ' +
-          'failing the workflow, so this usually means the secret is missing ' +
-          'or the workflow is running from a fork (where secrets are ' +
-          'unavailable by design).',
-        '',
-        'Set a deploy token under Settings -> Secrets and variables -> Actions, ' +
-          'then reference it as `token: ${{ secrets.BEHINDGATE_TOKEN }}`.',
-      ].join('\n')
-    );
-  }
-
-  // bg-deploy exits 1 with "error: not a JWT" for this, which is the same exit
-  // code as a network failure or a rejected release. Checking here separates a
-  // malformed secret from a genuine deploy failure. The token itself is never
-  // included in the message.
-  const segments = token.split('.');
-  const looksLikeJwt =
-    segments.length === 3 &&
-    segments[0].length > 0 &&
-    segments[1].length > 0 &&
-    segments.every((segment) => /^[A-Za-z0-9_-]*$/.test(segment));
-
-  if (!looksLikeJwt) {
-    throw new Error(
-      [
-        'The `token` input is not a well-formed JWT.',
-        '',
-        'A BehindGate deploy token has three base64url segments separated by ' +
-          'dots (header.payload.signature). The value supplied does not, which ' +
-          'usually means it was truncated, wrapped across lines, or quoted when ' +
-          'it was stored as a secret.',
-        '',
-        'Re-copy the token from the workspace dashboard under ' +
-          'Settings -> Deploy tokens.',
-      ].join('\n')
-    );
-  }
-
-  return token;
+  throw new ConfigurationError(
+    [
+      'No `token` was supplied, so this job has to authenticate as itself -- ' +
+        'but no OIDC token is available to it.',
+      '',
+      'Either the job is missing the permission that mints one:',
+      '',
+      '    permissions:',
+      '      id-token: write',
+      '',
+      'or you meant to pass a deploy token and the secret behind `token:` is ' +
+        'not set. An unset secret interpolates to an empty string rather than ' +
+        'failing the workflow, and a fork gets no secrets at all by design.',
+    ].join('\n')
+  );
 }
 
 /** Fail early on a bad path; the CLI validates the token first and would mask this. */
@@ -28906,43 +29645,65 @@ function validatePath(inputPath) {
   return inputPath;
 }
 
-async function writeSummary({ releaseId, url, endpoint, deployPath, version, pinned }) {
+async function writeSummary({
+  releaseId,
+  url,
+  endpoint,
+  endpointSource,
+  deployPath,
+  siteUrl,
+  version,
+  verifiedAgainst,
+  deleteApp,
+  deleted,
+}) {
   try {
-    const summary = core.summary.addHeading('BehindGate deploy', 3);
+    const summary = core.summary.addHeading(
+      deleteApp ? 'BehindGate teardown' : 'BehindGate deploy',
+      3
+    );
 
-    if (url) {
+    if (deleteApp) {
+      summary.addRaw(
+        deleted
+          ? `Deleted the app at <code>${siteUrl}</code>.`
+          : `No app at <code>${siteUrl}</code>; nothing to delete.`,
+        true
+      );
+    } else if (url) {
       summary.addRaw(`Deployed <a href="${url}">${url}</a>`, true);
     }
 
-    const rows = [
-      [{ data: 'Release', header: true }, { data: releaseId || 'unknown' }],
-      [{ data: 'Source', header: true }, { data: deployPath }],
-      [{ data: 'CLI', header: true }, { data: `bg-deploy ${version}` }],
-      [
-        { data: 'Endpoint', header: true },
-        {
-          data: `${endpoint || 'unknown'}${
-            pinned ? ' (pinned via <code>url</code>)' : ' (from token claim)'
-          }`,
-        },
-      ],
-    ];
+    const rows = [];
+
+    if (!deleteApp) {
+      rows.push([{ data: 'Release', header: true }, { data: releaseId || 'unknown' }]);
+      rows.push([{ data: 'Source', header: true }, { data: deployPath }]);
+    }
+    if (siteUrl) {
+      rows.push([{ data: 'Target', header: true }, { data: siteUrl }]);
+    }
+    rows.push([
+      { data: 'CLI', header: true },
+      {
+        data:
+          `bg-deploy ${version} ` +
+          (verifiedAgainst === 'versions.json'
+            ? '(checksum pinned in <code>versions.json</code>)'
+            : `(checksum from the host's own manifest, not a pin)`),
+      },
+    ]);
+    rows.push([
+      { data: 'Endpoint', header: true },
+      { data: `${endpoint || 'unknown'} (pinned via ${endpointSource})` },
+    ]);
+
     summary.addTable(rows);
 
-    if (!url) {
+    if (!deleteApp && !url) {
       summary.addRaw(
         'No deployed address was reported by the CLI, so there is nothing to ' +
           'link. The deploy itself succeeded.',
-        true
-      );
-    }
-
-    if (!pinned) {
-      summary.addRaw(
-        '<strong>Endpoint not pinned.</strong> The upload target came from the ' +
-          "token's own claim. Set the <code>url</code> input to pin it: the CLI " +
-          'then refuses to deploy when a token claims a different endpoint, ' +
-          'instead of quietly sending the build wherever the token says.',
         true
       );
     }
@@ -28965,29 +29726,51 @@ async function run() {
     if (trimmed && trimmed !== rawToken) core.setSecret(trimmed);
   }
 
-  const token = validateToken(rawToken);
-  const deployPath = validatePath(core.getInput('path', { required: true }));
-  const url = core.getInput('url').trim();
-  const version = core.getInput('cli-version').trim() || versions.defaultVersion();
-  const baseUrl =
-    core.getInput('download-base-url').trim() || versions.defaultDownloadBaseUrl();
+  const inputs = resolveInputs({
+    env: core.getInput('env'),
+    url: core.getInput('url'),
+    downloadBaseUrl: core.getInput('download-base-url'),
+    token: rawToken,
+    path: core.getInput('path'),
+    siteUrl: core.getInput('site-url'),
+    createApp: core.getInput('create-app'),
+    deleteApp: core.getInput('delete-app'),
+  });
+
+  const { args, deployPath, deployUrl, endpointSource, siteUrl, usesToken } = inputs;
+
+  for (const warning of inputs.warnings) core.warning(warning);
+
+  if (deployPath) validatePath(deployPath);
+  if (!usesToken) requireOidcAvailable();
 
   const platform = resolvePlatform();
-  const binary = await acquireCli({ version, platform, baseUrl });
+  const pinnedCli = inputs.environment.pinnedCli;
 
-  const args = ['-y', '--json'];
-  if (url) {
-    args.push('--url', url);
-  } else {
+  const cli = await acquireCli({
+    version: core.getInput('cli-version').trim(),
+    platform,
+    baseUrl: inputs.downloadBaseUrl,
+    pinned: pinnedCli,
+  });
+  const binary = cli.binary;
+
+  if (!pinnedCli) {
     core.warning(
-      'No `url` input set, so the deploy endpoint comes from the token itself. ' +
-        'A token is both a credential and a routing instruction: anyone who can ' +
-        'change the secret can redirect this upload while the job still reports ' +
-        'success. Pin the endpoint with `url:` and the CLI will refuse to deploy ' +
-        'if a token turns up claiming a different one.'
+      `The CLI was verified against the checksum manifest ${cli.verifiedAgainst} ` +
+        `rather than against the checksums committed in versions.json. That host ` +
+        `serves both the binary and the manifest, so the check proves the download ` +
+        `arrived intact, not that the build is the one this repository reviewed. ` +
+        `This applies to the ${inputs.environment.name} environment, whose builds ` +
+        `are republished too often for a committed pin to describe them.`
     );
   }
-  args.push(deployPath);
+
+  core.info(
+    usesToken
+      ? `Deploying to ${deployUrl} (pinned via ${endpointSource}) with a deploy token`
+      : `Authenticating as this job against ${deployUrl} (pinned via ${endpointSource})`
+  );
 
   // stdout and stderr must stay separate: under --json, stdout carries exactly
   // one JSON object and every human-readable progress line goes to stderr.
@@ -28997,10 +29780,22 @@ async function run() {
 
   // The token goes in the environment, never on the command line, so it cannot
   // surface in a process listing or in the command echo of the step log.
+  //
+  // With no `token` input the variable is REMOVED rather than left to inherit:
+  // the CLI picks its credential mode from the environment, so a stray
+  // BEHINDGATE_TOKEN set elsewhere in the workflow would otherwise silently
+  // override what the inputs asked for.
+  const childEnv = { ...process.env };
+  if (inputs.token) {
+    childEnv.BEHINDGATE_TOKEN = inputs.token;
+  } else {
+    delete childEnv.BEHINDGATE_TOKEN;
+  }
+
   const exitCode = await exec.exec(binary, args, {
     ignoreReturnCode: true,
     silent: true,
-    env: { ...process.env, BEHINDGATE_TOKEN: token },
+    env: childEnv,
     listeners: {
       stdout: (data) => {
         stdout += data.toString();
@@ -29017,7 +29812,7 @@ async function run() {
   if (exitCode !== EXIT_SUCCESS) {
     const { title, detail } = describeExitCode(exitCode, {
       path: deployPath,
-      urlPinned: Boolean(url),
+      usesToken,
       cliMessage: parseErrorMessage({ stdout, stderr }),
     });
     core.setFailed(`${title}\n\n${detail}`);
@@ -29037,22 +29832,36 @@ async function run() {
   const releaseId = parsed?.releaseId || '';
   const deployedUrl = parsed?.url || '';
 
+  // A teardown publishes no release and has no address, so both outputs are
+  // empty by definition rather than by failure.
   core.setOutput('release-id', releaseId);
   core.setOutput('url', deployedUrl);
 
-  core.info(
-    deployedUrl
-      ? `Deployed release ${releaseId || '(unknown)'} to ${deployedUrl}`
-      : `Deployed release ${releaseId || '(unknown)'}`
-  );
+  if (inputs.deleteApp) {
+    core.info(
+      parsed?.deleted
+        ? `Deleted the app at ${siteUrl}`
+        : `No app at ${siteUrl}; nothing to delete`
+    );
+  } else {
+    core.info(
+      deployedUrl
+        ? `Deployed release ${releaseId || '(unknown)'} to ${deployedUrl}`
+        : `Deployed release ${releaseId || '(unknown)'}`
+    );
+  }
 
   await writeSummary({
     releaseId,
     url: deployedUrl,
-    endpoint: parsed?.endpoint,
+    endpoint: parsed?.endpoint || deployUrl,
+    endpointSource,
     deployPath,
-    version: parsed?.version || version,
-    pinned: Boolean(url),
+    siteUrl,
+    version: parsed?.version || cli.version,
+    verifiedAgainst: cli.verifiedAgainst,
+    deleteApp: inputs.deleteApp,
+    deleted: parsed?.deleted,
   });
 }
 
@@ -29060,7 +29869,7 @@ run().catch((error) => {
   core.setFailed(error instanceof Error ? error.message : String(error));
 });
 
-module.exports = { run, acquireCli, validateToken, validatePath };
+module.exports = { run, acquireCli, requireOidcAvailable, validatePath };
 
 
 /***/ }),
