@@ -101,6 +101,59 @@
           "sha256": "9c556ac0cccd21fd52783ba9d749f30ebc8f7b1d59963b5cdc6bf234ae473155"
         }
       }
+    },
+    "2026.8.5": {
+      "note": [
+        "PROVISIONAL, and the only entry here not captured from production: 2026.8.5",
+        "exists so far only as a test-environment pre-release. Production serves 2026.8.4",
+        "and answers /downloads/2026.8.5/ with the CDN's 403, so this version resolves",
+        "only against the test host.",
+        "",
+        "It is pinned because it is the first release that can exchange a CI OIDC token",
+        "(BEHINDGATE_OIDC_TOKEN), which the GitLab component authenticates with by",
+        "default; 2026.8.4 has no OIDC support at all.",
+        "",
+        "The test host republishes under the same version, so these digests describe the",
+        "build it served on the capture date and nothing more. RE-CAPTURE FROM PRODUCTION",
+        "before moving defaultVersion here:",
+        "",
+        "    node script/checksums.js write --version 2026.8.5"
+      ],
+      "capturedFrom": "https://app.test.behindgate.net",
+      "capturedAt": "2026-08-20",
+      "commit": "36cfb88bad038aa5ecd6cc64a9bb630e492e5278",
+      "platforms": {
+        "darwin-amd64": {
+          "archive": "bg-deploy-darwin-amd64.tar.gz",
+          "binary": "bg-deploy",
+          "sha256": "39b46091412e021c21e413e83f5f3272d3dd2746d5e2e82bc991022b7e644665"
+        },
+        "darwin-arm64": {
+          "archive": "bg-deploy-darwin-arm64.tar.gz",
+          "binary": "bg-deploy",
+          "sha256": "a54f22a290416d01d0faf5c0ad4f309ab81916861158cdd0f869e56479cca9f8"
+        },
+        "linux-amd64": {
+          "archive": "bg-deploy-linux-amd64.tar.gz",
+          "binary": "bg-deploy",
+          "sha256": "ffdf4d3335d2e2c43b8c42a0f7169e8571479ee350426c0a12d1d03e4ef1e806"
+        },
+        "linux-arm64": {
+          "archive": "bg-deploy-linux-arm64.tar.gz",
+          "binary": "bg-deploy",
+          "sha256": "c750633080bb858534d095c383d5a23dbdd977cffe6f252d169c3b4bb7638b2c"
+        },
+        "windows-amd64": {
+          "archive": "bg-deploy-windows-amd64.zip",
+          "binary": "bg-deploy.exe",
+          "sha256": "8e39f94f3b41da7c8885c227638140fe39e88f08f959130ec0e756ce32538a1e"
+        },
+        "windows-arm64": {
+          "archive": "bg-deploy-windows-arm64.zip",
+          "binary": "bg-deploy.exe",
+          "sha256": "6ac9f79b9f77572298f6c5805d4cb5ce0e8a26fff901d85171ef07f939723c0e"
+        }
+      }
     }
   }
 }

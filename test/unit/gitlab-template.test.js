@@ -16,8 +16,18 @@ const assert = require('node:assert/strict');
 const fs = require('node:fs');
 const path = require('node:path');
 
-const { build, generatePins, PLATFORMS } = require('../../script/build-gitlab-template');
+const {
+  build,
+  generatePins,
+  generateOrigins,
+  oidcCapableVersions,
+  compareVersions,
+  PLATFORMS,
+  OIDC_MIN_VERSION,
+  DEPLOY_PATH,
+} = require('../../script/build-gitlab-template');
 const versions = require('../../src/core/versions');
+const { ENVIRONMENTS } = require('../../src/core/environments');
 
 const ROOT = path.join(__dirname, '..', '..');
 
@@ -53,11 +63,72 @@ describe('the generated GitLab component', () => {
     }
   });
 
-  test('the default version and download host come from versions.json', () => {
+  test('the default version is the newest release that can authenticate over OIDC', () => {
+    // Deliberately NOT versions.json's own defaultVersion, which belongs to the
+    // Action: that one still has the deploy token as its default credential and
+    // must keep pointing at what production serves. The component authenticates
+    // as the job unless a token is set, so its default has to be able to.
     const script = read('src/gitlab/deploy.sh');
-    assert.ok(script.includes(`BG_DEFAULT_VERSION='${versions.defaultVersion()}'`));
-    assert.ok(
-      script.includes(`BG_DEFAULT_BASE_URL='${versions.defaultDownloadBaseUrl()}'`)
+    const capable = oidcCapableVersions(versions.DEFAULT_TABLE);
+
+    assert.ok(capable.length, 'versions.json must pin an OIDC-capable release');
+    assert.ok(script.includes(`BG_DEFAULT_VERSION='${capable[capable.length - 1]}'`));
+    assert.ok(script.includes(`BG_OIDC_VERSIONS='${capable.join(' ')}'`));
+    assert.ok(script.includes(`BG_OIDC_MIN_VERSION='${OIDC_MIN_VERSION}'`));
+  });
+
+  test('the OIDC-capable set is decided numerically, not as strings', () => {
+    // The vendor's versions are calendar, not semver: 2026.8.10 has to sort
+    // above 2026.8.9, which a string comparison gets backwards.
+    assert.ok(compareVersions('2026.8.10', '2026.8.9') > 0);
+    assert.ok(compareVersions('2026.8.5', '2026.8.5') === 0);
+    assert.ok(compareVersions('2026.10.0', '2026.9.0') > 0);
+
+    const table = {
+      versions: { '2026.8.4': {}, '2026.8.9': {}, '2026.8.10': {} },
+    };
+    assert.deepEqual(oidcCapableVersions(table), ['2026.8.9', '2026.8.10']);
+  });
+
+  test('the endpoint the script derives matches what the Action resolves', () => {
+    // The component builds its endpoint as <app-origin> + BG_DEPLOY_PATH rather
+    // than reading a table of them. That is only safe while the two agree, and
+    // generateOrigins refuses to build if they ever stop.
+    const script = read('src/gitlab/deploy.sh');
+
+    for (const environment of Object.values(ENVIRONMENTS)) {
+      const origin = new URL(environment.deployUrl).origin;
+      assert.equal(`${origin}${DEPLOY_PATH}`, environment.deployUrl);
+      assert.ok(
+        script.includes(`'${origin}') printf '%s\\n' '${environment.pinnedCli ? 'pinned' : 'unpinned'}'`),
+        `deploy.sh does not record whether ${origin} republishes its builds`
+      );
+    }
+  });
+
+  test('the build refuses an environment whose addresses it could not derive', () => {
+    assert.throws(
+      () =>
+        generateOrigins({
+          odd: {
+            deployUrl: 'https://app.example.com/v2/releases',
+            downloadBaseUrl: 'https://app.example.com',
+            pinnedCli: true,
+          },
+        }),
+      /could not be reached that way/
+    );
+
+    assert.throws(
+      () =>
+        generateOrigins({
+          split: {
+            deployUrl: `https://app.example.com${DEPLOY_PATH}`,
+            downloadBaseUrl: 'https://downloads.example.com',
+            pinnedCli: true,
+          },
+        }),
+      /cannot express a split like that/
     );
   });
 
@@ -119,13 +190,41 @@ describe('the generated GitLab component', () => {
   });
 
   test('the build refuses values that would need shell quoting', () => {
+    const platforms = Object.fromEntries(
+      PLATFORMS.map((platform) => [
+        platform,
+        { archive: `bg-deploy-${platform}.tar.gz`, binary: 'bg-deploy', sha256: 'a'.repeat(64) },
+      ])
+    );
+
     const table = {
-      defaultVersion: "2026.9.0'; rm -rf /",
-      defaultDownloadBaseUrl: 'https://app.behindgate.com',
-      versions: {},
+      versions: {
+        '2026.9.0': { platforms },
+        "2026.9.1'; rm -rf /": { platforms },
+      },
     };
 
     assert.throws(() => generatePins(table), /would need quoting/);
+  });
+
+  test('the build refuses a table with nothing that can authenticate over OIDC', () => {
+    // The component's default credential is the job's own OIDC token, so a pin
+    // table that cannot supply a CLI able to exchange one would generate a
+    // component whose default configuration is unusable.
+    const table = {
+      versions: {
+        '2026.8.0': {
+          platforms: Object.fromEntries(
+            PLATFORMS.map((platform) => [
+              platform,
+              { archive: `bg-deploy-${platform}.tar.gz`, binary: 'bg-deploy', sha256: 'a'.repeat(64) },
+            ])
+          ),
+        },
+      },
+    };
+
+    assert.throws(() => generatePins(table), /pins nothing at or above/);
   });
 });
 
@@ -145,6 +244,29 @@ describe('the component contract', () => {
         `"${name}" looks like a credential and must not be a component input`
       );
     }
+  });
+
+  test('the job declares an id_token whose audience is the instance it deploys to', () => {
+    // The audience is what the CI trust checks, and a token minted for one
+    // audience cannot be exchanged at another. Both come from `app-origin`, so
+    // they cannot be set to disagree -- which is the entire reason the component
+    // takes an origin rather than an endpoint.
+    const [, job] = read('templates/deploy.yml').split('\n---');
+
+    assert.match(job, /^ {2}id_tokens:$/m);
+    assert.match(job, /^ {4}BEHINDGATE_OIDC_TOKEN:$/m);
+    assert.match(job, /^ {6}aud: \$\[\[ inputs\.app-origin \]\]$/m);
+  });
+
+  test('the component takes an origin, not an environment name', () => {
+    // `env` would have to resolve in the shell, while `aud:` resolves when the
+    // configuration is expanded -- so an environment shorthand could only drive
+    // the audience by declaring one id_token per environment, minting every job
+    // a credential for an instance it does not deploy to.
+    const spec = read('templates/deploy.yml').split('\n---')[0];
+
+    assert.match(spec, /^ {4}app-origin:$/m);
+    assert.ok(!/^ {4}env:$/m.test(spec), 'the `env` input was replaced by `app-origin`');
   });
 
   test('the deploy path and endpoint reach the script as variables, not as script text', () => {

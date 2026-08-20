@@ -25,9 +25,25 @@ const { startCaptureServer, fakeJwt } = require('../helpers/capture-server');
 const { startDownloadServer } = require('../helpers/download-server');
 const { acquireRealCli, makeSiteFixture } = require('../helpers/cli');
 const { listZipEntries } = require('../helpers/zip');
-const { resolveEnvironment } = require('../../src/core/environments');
+const { ENVIRONMENTS, DEFAULT_ENVIRONMENT } = require('../../src/core/environments');
+const { oidcCapableVersions } = require('../../script/build-gitlab-template');
+const { DEFAULT_TABLE } = require('../../src/core/versions');
 
 const SCRIPT = path.join(__dirname, '..', '..', 'src', 'gitlab', 'deploy.sh');
+
+/** The origin the component defaults to, which is also its default audience. */
+const DEFAULT_ORIGIN = new URL(ENVIRONMENTS[DEFAULT_ENVIRONMENT].deployUrl).origin;
+
+/**
+ * The CLI the component installs by default: the newest pinned release that can
+ * exchange an OIDC token, fetched from wherever its pin was captured.
+ *
+ * Not `versions.defaultVersion()`, which belongs to the Action. The two differ
+ * for as long as the OIDC-capable release is ahead of production, and it is the
+ * component's choice these tests have to exercise.
+ */
+const CLI_VERSION = oidcCapableVersions(DEFAULT_TABLE).at(-1);
+const CLI_BASE_URL = DEFAULT_TABLE.versions[CLI_VERSION].capturedFrom;
 
 let skipReason = null;
 let downloads = null;
@@ -39,7 +55,7 @@ before(async () => {
     return;
   }
 
-  const cli = await acquireRealCli();
+  const cli = await acquireRealCli({ version: CLI_VERSION, baseUrl: CLI_BASE_URL });
   if (cli.skip) {
     skipReason = cli.skip;
     return;
@@ -83,7 +99,14 @@ function makeWorkspace() {
   return dir;
 }
 
-/** Run the component's script the way the job does: `sh`, in the workspace. */
+/**
+ * Run the component's script the way the job does: `sh`, in the workspace.
+ *
+ * The default credential is the OIDC token, because that is what the component
+ * declares an `id_tokens:` block for and what a job gets with nothing
+ * configured. Tests of the deploy-token fallback pass BEHINDGATE_TOKEN, which
+ * takes precedence in the script exactly as it does in the CLI.
+ */
 function runComponent(cwd, env = {}) {
   return new Promise((resolve) => {
     execFile(
@@ -93,8 +116,11 @@ function runComponent(cwd, env = {}) {
         cwd,
         env: {
           ...process.env,
-          BEHINDGATE_TOKEN: fakeJwt(),
+          BEHINDGATE_TOKEN: '',
+          BEHINDGATE_OIDC_TOKEN: fakeJwt({ aud: DEFAULT_ORIGIN }),
+          BG_APP_ORIGIN: '',
           BG_PATH: 'public',
+          BG_TRUST: '',
           BG_URL: '',
           BG_CLI_VERSION: '',
           BG_DOWNLOAD_BASE_URL: downloads ? downloads.url : '',
@@ -287,17 +313,25 @@ describe('the GitLab component refuses to run an unverified binary', () => {
 });
 
 describe('the GitLab component fails early on bad configuration', () => {
-  test('an empty token names the CI/CD variable rather than failing inside the CLI', async (t) => {
+  test('a job with neither credential names both, and says where the OIDC one went', async (t) => {
     if (skipReason) return t.skip(skipReason);
 
-    const result = await runComponent(makeWorkspace(), { BEHINDGATE_TOKEN: '' });
+    // GitLab supplies BEHINDGATE_OIDC_TOKEN from the `id_tokens:` block the
+    // component puts on the job. Its absence means the job was redefined without
+    // carrying that block over -- redefining REPLACES keys rather than merging
+    // them -- which is not something the CLI could ever diagnose from inside.
+    const result = await runComponent(makeWorkspace(), {
+      BEHINDGATE_OIDC_TOKEN: '',
+      BEHINDGATE_TOKEN: '',
+    });
 
     assert.notEqual(result.code, 0);
-    assert.match(result.stderr, /BEHINDGATE_TOKEN is empty/);
-    assert.match(result.stderr, /Protected/);
+    assert.match(result.stderr, /has no credential/);
+    assert.match(result.stderr, /id_tokens:/);
+    assert.match(result.stderr, /BEHINDGATE_TOKEN/);
   });
 
-  test('a malformed token is reported as malformed, and never echoed', async (t) => {
+  test('a malformed deploy token is reported as malformed, and never echoed', async (t) => {
     if (skipReason) return t.skip(skipReason);
 
     const result = await runComponent(makeWorkspace(), { BEHINDGATE_TOKEN: 'not-a-jwt' });
@@ -306,6 +340,59 @@ describe('the GitLab component fails early on bad configuration', () => {
     assert.match(result.stderr, /not a well-formed JWT/);
     assert.ok(!result.output.includes('not-a-jwt'), 'the token value must never be echoed');
   });
+
+  test('a deploy token takes precedence over OIDC, matching the CLI', async (t) => {
+    if (skipReason) return t.skip(skipReason);
+
+    // The CLI uses BEHINDGATE_TOKEN as-is whenever it is set, so the script has
+    // to select the same credential the CLI will -- otherwise its diagnostics
+    // describe a code path that did not run.
+    const capture = await startCaptureServer();
+
+    try {
+      const result = await runComponent(makeWorkspace(), {
+        BEHINDGATE_TOKEN: fakeJwt(),
+        BG_URL: capture.url,
+      });
+
+      assert.equal(result.code, 0, `component failed:\n${result.output}`);
+      assert.match(result.output, /Authenticating with BEHINDGATE_TOKEN/);
+      assert.equal(capture.exchanges.length, 0, 'a deploy token needs no OIDC exchange');
+    } finally {
+      await capture.close();
+    }
+  }, { timeout: 120000 });
+
+  test('a CLI too old for OIDC is refused before anything is downloaded', async (t) => {
+    if (skipReason) return t.skip(skipReason);
+
+    // Older releases do not read BEHINDGATE_OIDC_TOKEN at all; they report the
+    // absence of a deploy token instead, which sends you looking for a variable
+    // you deliberately did not set.
+    const before = downloads.requests.length;
+    const result = await runComponent(makeWorkspace(), { BG_CLI_VERSION: '2026.8.4' });
+
+    assert.notEqual(result.code, 0);
+    assert.match(result.stderr, /2026\.8\.4 cannot authenticate over OIDC/);
+    assert.equal(downloads.requests.length, before, 'nothing may be fetched for a CLI that cannot');
+  }, { timeout: 60000 });
+
+  test('that same CLI is fine once a deploy token is supplied', async (t) => {
+    if (skipReason) return t.skip(skipReason);
+
+    // The version gate is about the credential, not about the release: 2026.8.4
+    // deploys perfectly well with a deploy token, and refusing it outright would
+    // remove the fallback the gate exists to point at.
+    const result = await runComponent(makeWorkspace(), {
+      BG_CLI_VERSION: '2026.8.4',
+      BEHINDGATE_TOKEN: fakeJwt(),
+      BG_PATH: 'no-such-dir',
+    });
+
+    assert.notEqual(result.code, 0);
+    assert.doesNotMatch(result.stderr, /cannot authenticate over OIDC/);
+    assert.match(result.stderr, /does not exist in the job workspace/);
+  }, { timeout: 60000 });
 
   test('a path that does not exist is reported before the CLI is downloaded', async (t) => {
     if (skipReason) return t.skip(skipReason);
@@ -357,61 +444,65 @@ describe('the GitLab component fails early on bad configuration', () => {
     }
   }, { timeout: 60000 });
 
-  test('an unrecognised env is refused before anything is downloaded', async (t) => {
+  test('an `app-origin` carrying a path is refused before anything is downloaded', async (t) => {
     if (skipReason) return t.skip(skipReason);
 
+    // The deploy endpoint is built by appending to this value, and the same
+    // value is the audience the token was minted for. A path here would produce
+    // an address nobody named.
     const before = downloads.requests.length;
-    const result = await runComponent(makeWorkspace(), { BG_ENV: 'staging' });
+    const result = await runComponent(makeWorkspace(), {
+      BG_APP_ORIGIN: 'https://app.behindgate.com/api/deploy/releases',
+    });
 
     assert.notEqual(result.code, 0);
-    assert.match(result.stderr, /Unknown `env` input "staging"/);
-    assert.match(result.stderr, /prod test/);
-    assert.equal(downloads.requests.length, before, 'nothing may be fetched for an unknown env');
+    assert.match(result.stderr, /`app-origin` input .* has a path/);
+    assert.match(result.stderr, /use the `url` input/);
+    assert.equal(downloads.requests.length, before, 'nothing may be fetched for a bad origin');
   }, { timeout: 60000 });
 
-  test('accepts exactly the env spellings resolveEnvironment does', async (t) => {
+  test('a value that is not a URL at all is refused', async (t) => {
     if (skipReason) return t.skip(skipReason);
 
-    // The component cannot import resolveEnvironment, so it reimplements the
-    // normalisation -- trim the ends, lowercase. `env: Prod` working in one and
-    // not the other is the kind of divergence that only shows up in someone
-    // else's pipeline. An unpinned cli-version stops each run right after the
-    // env lookup, so this needs no network.
-    for (const value of ['prod', 'PROD', ' Prod ', 'test', 'TEST', 'staging', 'pr od', '']) {
-      let accepted = true;
-      try {
-        resolveEnvironment(value);
-      } catch {
-        accepted = false;
-      }
+    for (const value of ['app.behindgate.com', 'prod', 'ftp://app.behindgate.com', 'https://']) {
+      const result = await runComponent(makeWorkspace(), { BG_APP_ORIGIN: value });
 
-      const result = await runComponent(makeWorkspace(), {
-        BG_ENV: value,
-        BG_CLI_VERSION: '1999.1.1',
-      });
-
-      const refused = /Unknown `env` input/.test(result.stderr);
-      assert.equal(
-        refused,
-        !accepted,
-        `the shell and resolveEnvironment disagree about ${JSON.stringify(value)}`
-      );
+      assert.notEqual(result.code, 0, `${value} must be refused`);
+      assert.match(result.stderr, /is not a URL|has a path/);
     }
   }, { timeout: 120000 });
 
-  test('`url` wins over the endpoint `env` resolves', async (t) => {
+  test('a trailing slash is tolerated rather than doubling the separator', async (t) => {
     if (skipReason) return t.skip(skipReason);
 
-    // An explicit endpoint must never be replaced by one derived from a
-    // shorthand. env: test would send this to app.test.behindgate.net; the
-    // upload landing on the capture server is the proof that it did not.
+    // The endpoint is this value plus /api/deploy/releases, so an unstripped
+    // slash would produce a path the API does not serve -- and the audience
+    // would be spelled differently from the endpoint it is exchanged at.
     const capture = await startCaptureServer();
 
     try {
       const result = await runComponent(makeWorkspace(), {
-        BG_ENV: 'test',
+        BG_APP_ORIGIN: `${DEFAULT_ORIGIN}//`,
         BG_URL: capture.url,
       });
+
+      assert.equal(result.code, 0, `component failed:\n${result.output}`);
+      assert.doesNotMatch(result.stderr, /is not an instance this component knows about/);
+    } finally {
+      await capture.close();
+    }
+  }, { timeout: 120000 });
+
+  test('`url` wins over the endpoint `app-origin` derives', async (t) => {
+    if (skipReason) return t.skip(skipReason);
+
+    // An explicit endpoint must never be replaced by one derived from a
+    // shorthand. The default origin would send this to app.behindgate.com; the
+    // upload landing on the capture server is the proof that it did not.
+    const capture = await startCaptureServer();
+
+    try {
+      const result = await runComponent(makeWorkspace(), { BG_URL: capture.url });
 
       assert.equal(result.code, 0, `component failed:\n${result.output}`);
       assert.equal(capture.uploads.length, 1);
@@ -420,19 +511,43 @@ describe('the GitLab component fails early on bad configuration', () => {
     }
   }, { timeout: 120000 });
 
-  test('an environment that republishes builds says so', async (t) => {
+  test('an instance that republishes builds says so', async (t) => {
     if (skipReason) return t.skip(skipReason);
 
+    const republishing = Object.values(ENVIRONMENTS).find((environment) => !environment.pinnedCli);
     const capture = await startCaptureServer();
 
     try {
       const result = await runComponent(makeWorkspace(), {
-        BG_ENV: 'test',
+        BG_APP_ORIGIN: new URL(republishing.deployUrl).origin,
         BG_URL: capture.url,
       });
 
       assert.match(result.stderr, /republishes CLI builds under the same version/);
-      assert.match(result.stderr, /failure here means the build was replaced/);
+      assert.match(result.stderr, /means the build was replaced, not that anything is wrong/);
+    } finally {
+      await capture.close();
+    }
+  }, { timeout: 120000 });
+
+  test('an instance this component does not name is allowed, but warned about', async (t) => {
+    if (skipReason) return t.skip(skipReason);
+
+    // The pin is what protects the download, and it is committed here rather
+    // than served by the host -- so an unknown host cannot substitute a binary,
+    // it can only fail verification. That makes a warning the right response
+    // rather than a refusal, which would rule out local instances entirely.
+    const capture = await startCaptureServer();
+
+    try {
+      const result = await runComponent(makeWorkspace(), {
+        BG_APP_ORIGIN: 'https://behindgate.internal.example',
+        BG_URL: capture.url,
+      });
+
+      assert.equal(result.code, 0, `component failed:\n${result.output}`);
+      assert.match(result.stderr, /is not an instance this component knows about/);
+      assert.match(result.stderr, /still verified against a checksum pinned here/);
     } finally {
       await capture.close();
     }

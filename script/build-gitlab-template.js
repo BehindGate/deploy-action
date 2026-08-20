@@ -58,6 +58,56 @@ const BODY_END = '# <<< END generated';
 const PLATFORMS = Object.freeze(['linux-amd64', 'linux-arm64', 'darwin-amd64', 'darwin-arm64']);
 
 /**
+ * The first CLI release that can exchange a CI OIDC token.
+ *
+ * Earlier ones read `BEHINDGATE_TOKEN` and nothing else, and report its absence
+ * as a bare exit 2 -- so without this check "no deploy token" is what a job sees
+ * when a deploy token was never the plan.
+ */
+const OIDC_MIN_VERSION = '2026.8.5';
+
+/**
+ * The path the deploy endpoint sits at, below a BehindGate origin.
+ *
+ * The RELEASES collection specifically. The CLI posts here to create a release
+ * and derives its siblings by trimming the last segment -- `/api/deploy/oidc/token`
+ * for the credential exchange, which is the one this component depends on.
+ */
+const DEPLOY_PATH = '/api/deploy/releases';
+
+/**
+ * The management-plane origin of an environment: scheme and host of its
+ * dashboard, which is also the audience its CI trust requires.
+ */
+function originOf(environment) {
+  return new URL(environment.deployUrl).origin;
+}
+
+/**
+ * Sort two of the vendor's calendar versions.
+ *
+ * They are not semver -- `2026.8.10` has to sort above `2026.8.9` -- so compare
+ * the dot-separated components numerically rather than as strings.
+ */
+function compareVersions(a, b) {
+  const left = String(a).split('.').map(Number);
+  const right = String(b).split('.').map(Number);
+
+  for (let i = 0; i < Math.max(left.length, right.length); i += 1) {
+    const diff = (left[i] || 0) - (right[i] || 0);
+    if (diff !== 0) return diff;
+  }
+  return 0;
+}
+
+/** The pinned versions that can exchange an OIDC token, oldest first. */
+function oidcCapableVersions(table) {
+  return Object.keys(table.versions)
+    .filter((version) => compareVersions(version, OIDC_MIN_VERSION) >= 0)
+    .sort(compareVersions);
+}
+
+/**
  * Every generated value lands inside single quotes in POSIX shell, which has no
  * escape for a single quote. Version strings, hostnames, archive names and hex
  * digests all pass, so this should never fire -- it exists so that the day one
@@ -75,31 +125,57 @@ function shellSafe(value, what) {
 }
 
 /**
- * The shell environment table.
+ * The shell origin table.
  *
- * Generated from src/core/environments.js for the same reason the pins are
- * generated from versions.json: the component cannot require either at job
- * time, and two hand-maintained copies of an endpoint are two chances to send a
- * deploy to the wrong one.
+ * The component has no `env` input. Under OIDC there is no deploy token to
+ * carry the endpoint, so the CLI requires one to be named -- and the audience
+ * the job asks GitLab to mint its token for is that endpoint's origin. A single
+ * `app-origin` input therefore fixes all three: audience, deploy endpoint and
+ * download host.
+ *
+ * What this table adds is the one thing that does NOT follow from the origin --
+ * whether the host publishes a version once or republishes it -- and a build-time
+ * check that the derived addresses match what src/core/environments.js records,
+ * so the component and the Action cannot come to disagree about where a
+ * published environment lives.
  */
-function generateEnvironments(table = environments.ENVIRONMENTS) {
+function generateOrigins(table = environments.ENVIRONMENTS) {
   const cases = [];
 
   for (const [name, environment] of Object.entries(table)) {
+    const origin = originOf(environment);
+
+    if (`${origin}${DEPLOY_PATH}` !== environment.deployUrl) {
+      throw new Error(
+        `The ${name} environment deploys to ${environment.deployUrl}, which is not ` +
+          `its origin plus ${DEPLOY_PATH}. The GitLab component derives the endpoint ` +
+          `from \`app-origin\`, so this environment could not be reached that way.`
+      );
+    }
+
+    if (origin !== environment.downloadBaseUrl) {
+      throw new Error(
+        `The ${name} environment downloads the CLI from ${environment.downloadBaseUrl} ` +
+          `but deploys to ${origin}. The GitLab component derives both from ` +
+          `\`app-origin\`, which cannot express a split like that.`
+      );
+    }
+
     cases.push(
-      `    '${shellSafe(name, 'an environment name')}') printf '%s %s %s\\n' ` +
-        `'${shellSafe(environment.deployUrl, 'a deploy endpoint')}' ` +
-        `'${shellSafe(environment.downloadBaseUrl, 'a download host')}' ` +
+      `    '${shellSafe(origin, 'an origin')}') printf '%s\\n' ` +
         `'${environment.pinnedCli ? 'pinned' : 'unpinned'}' ;;`
     );
   }
 
   return [
-    `BG_DEFAULT_ENV='${shellSafe(environments.DEFAULT_ENVIRONMENT, 'the default environment')}'`,
-    `BG_KNOWN_ENVS='${Object.keys(table).map((n) => shellSafe(n, 'an environment name')).join(' ')}'`,
+    `BG_DEPLOY_PATH='${shellSafe(DEPLOY_PATH, 'the deploy path')}'`,
+    `BG_DEFAULT_ORIGIN='${shellSafe(originOf(table[environments.DEFAULT_ENVIRONMENT]), 'the default origin')}'`,
+    `BG_KNOWN_ORIGINS='${Object.values(table)
+      .map((e) => shellSafe(originOf(e), 'an origin'))
+      .join(' ')}'`,
     '',
-    '# Prints "<deploy-url> <download-base-url> <pinned|unpinned>" for an environment.',
-    'bg_env() {',
+    '# Prints "pinned" or "unpinned" for an origin this repository names.',
+    'bg_origin() {',
     '  case "$1" in',
     ...cases,
     '    *) return 1 ;;',
@@ -141,10 +217,25 @@ function generatePins(table) {
     }
   }
 
+  const oidcCapable = oidcCapableVersions(table);
+
+  if (!oidcCapable.length) {
+    throw new Error(
+      `versions.json pins nothing at or above ${OIDC_MIN_VERSION}, so no pinned ` +
+        `CLI can exchange an OIDC token -- which is how this component ` +
+        `authenticates by default. Pin ${OIDC_MIN_VERSION} or newer.`
+    );
+  }
+
   return [
-    `BG_DEFAULT_VERSION='${shellSafe(table.defaultVersion, 'the default version')}'`,
-    `BG_DEFAULT_BASE_URL='${shellSafe(table.defaultDownloadBaseUrl, 'the default download host')}'`,
+    // The component authenticates with OIDC unless a deploy token is set, so its
+    // default has to be a release that can do that. versions.json's own
+    // `defaultVersion` belongs to the Action, which still has the deploy token as
+    // its default path and must keep defaulting to what production serves.
+    `BG_DEFAULT_VERSION='${shellSafe(oidcCapable[oidcCapable.length - 1], 'the default version')}'`,
     `BG_PINNED_VERSIONS='${versions.map((v) => shellSafe(v, 'a version')).join(' ')}'`,
+    `BG_OIDC_MIN_VERSION='${shellSafe(OIDC_MIN_VERSION, 'the minimum OIDC version')}'`,
+    `BG_OIDC_VERSIONS='${oidcCapable.map((v) => shellSafe(v, 'a version')).join(' ')}'`,
     '',
     '# Prints "<archive> <binary> <sha256>" for a version/platform pair.',
     'bg_pin() {',
@@ -204,7 +295,7 @@ function build() {
   const script = splice(readText(SCRIPT_PATH), {
     begin: PINS_BEGIN,
     end: PINS_END,
-    lines: [...generateEnvironments(), '', ...generatePins(table)],
+    lines: [...generateOrigins(), '', ...generatePins(table)],
     what: 'src/gitlab/deploy.sh',
   });
 
@@ -260,9 +351,13 @@ if (require.main === module) {
 module.exports = {
   build,
   generatePins,
-  generateEnvironments,
+  generateOrigins,
+  oidcCapableVersions,
+  compareVersions,
   splice,
   scriptBody,
   readText,
   PLATFORMS,
+  OIDC_MIN_VERSION,
+  DEPLOY_PATH,
 };

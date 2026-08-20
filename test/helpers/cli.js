@@ -30,9 +30,16 @@ const TMP_DIR = path.join(__dirname, '..', '.tmp');
 const TAR_PATHS = ['/usr/bin/tar', '/bin/tar'];
 
 /**
+ * Fetch a pinned CLI build.
+ *
+ * `version` and `baseUrl` default to what the Action installs. The GitLab tests
+ * override them: the component defaults to the newest OIDC-capable release,
+ * which production does not necessarily serve yet.
+ *
+ * @param {{version?: string, baseUrl?: string}} [options]
  * @returns {Promise<{binary: string} | {skip: string}>}
  */
-async function acquireRealCli() {
+async function acquireRealCli(options = {}) {
   if (process.platform === 'win32') {
     return { skip: 'integration tests use tar(1); not run on Windows' };
   }
@@ -56,9 +63,16 @@ async function acquireRealCli() {
     return { skip: error.message };
   }
 
-  const version = process.env.BG_CLI_VERSION || versions.defaultVersion();
-  const baseUrl = process.env.BG_DOWNLOAD_BASE_URL || versions.defaultDownloadBaseUrl();
-  const artifact = versions.resolveArtifact(version, platform);
+  const version = options.version || process.env.BG_CLI_VERSION || versions.defaultVersion();
+  const baseUrl =
+    options.baseUrl || process.env.BG_DOWNLOAD_BASE_URL || versions.defaultDownloadBaseUrl();
+
+  let artifact;
+  try {
+    artifact = versions.resolveArtifact(version, platform);
+  } catch (error) {
+    return { skip: error.message };
+  }
 
   const installDir = path.join(TMP_DIR, `${version}-${platform}`);
   const binary = path.join(installDir, artifact.binary);
@@ -104,7 +118,16 @@ async function acquireRealCli() {
     }
 
     // Same verification the Action performs, against the same committed table.
-    await verifyFileChecksum(archivePath, artifact.sha256, { source: baseUrl });
+    // A mismatch is returned as a skip rather than thrown: a host that
+    // republishes under one version serves bytes the pin stopped describing the
+    // moment it was rebuilt, and that is a stale pin to re-capture, not a test
+    // this suite can meaningfully fail on.
+    try {
+      await verifyFileChecksum(archivePath, artifact.sha256, { source: baseUrl });
+    } catch (error) {
+      fs.rmSync(archivePath, { force: true });
+      return { skip: `${version} from ${baseUrl} does not match its pin: ${error.message}` };
+    }
 
     const tar = TAR_PATHS.find((candidate) => fs.existsSync(candidate));
     if (!tar) {

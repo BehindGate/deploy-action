@@ -338,13 +338,19 @@ include:
       path: dist
 ```
 
-`env` selects the deploy endpoint and the CLI download host together, from the
-same [`src/core/environments.js`](src/core/environments.js) the Action reads —
-generated into the component, since it cannot require it at job time.
+Note the absence of a token: the component declares an `id_tokens:` block, so the
+job authenticates as itself over OIDC against a CI trust in the workspace. A
+masked `BEHINDGATE_TOKEN` CI/CD variable remains supported as the fallback, and
+takes precedence when set — neither credential can be an input, because component
+inputs are visible in the project's expanded pipeline configuration.
 
-The token arrives as a masked `BEHINDGATE_TOKEN` CI/CD variable rather than as
-an input, because component inputs are visible in the project's expanded
-pipeline configuration.
+Where the Action takes `env`, the component takes `app-origin`. GitLab resolves
+`aud:` when it expands the configuration, before an `env` value could be read by
+the job's shell, so an environment shorthand could only drive the audience by
+minting every job a token per environment. Under OIDC the endpoint has to be
+named anyway, and its origin *is* the audience — one input covers the audience,
+the endpoint and the CLI download host, checked at build time against the same
+[`src/core/environments.js`](src/core/environments.js) the Action reads.
 
 Like the Pipe, the component never writes to your project directory — which
 matters more here than it sounds: `path: .` deploys that directory, so anything

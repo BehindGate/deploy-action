@@ -17,25 +17,36 @@ spec:
         not at the directory above it.
       type: string
 
-    env:
+    app-origin:
       description: >-
-        The BehindGate environment to deploy to: prod (default) or test. It
-        selects both addresses that have to agree -- the deploy endpoint and the
-        host the CLI is downloaded from -- which are not the same URL and do not
-        derive from one another. An unrecognised value is refused rather than
-        falling back to a default and deploying somewhere you did not ask for.
-        `url` and `download-base-url` still win where they are set.
+        The BehindGate instance to deploy to, as scheme and host with no path.
+        One value fixes three things that must agree: the audience GitLab mints
+        this job's OIDC token for, the deploy endpoint it is exchanged at, and
+        the host the CLI is downloaded from. A token minted for one audience
+        cannot be exchanged at another, so deriving all three from a single
+        input is what keeps them from disagreeing. Change it only to reach a
+        different instance -- the test environment, or a local one.
+      type: string
+      default: https://app.behindgate.com
+
+    trust:
+      description: >-
+        The CI trust to exchange this job's OIDC token under, when more than one
+        in the workspace covers this pipeline. Leave unset otherwise: the CLI
+        resolves the single covering trust on its own. Ignored when
+        BEHINDGATE_TOKEN is set, since a deploy token already names its target.
       type: string
       default: ''
 
     url:
       description: >-
-        Override the deploy endpoint that `env` resolves to. Needed only for a
-        local or development endpoint; `env` covers the published ones. This is
-        the RELEASES collection, not its parent -- the CLI posts here to create
-        a release and derives its sibling routes by trimming the last segment,
-        so naming the parent puts release creation on the wrong route and the
-        bare host is fronted by a CDN that answers a POST with 403 text/html.
+        Override the deploy endpoint, which is otherwise `app-origin` plus
+        /api/deploy/releases. Needed only where an instance does not serve the
+        API at that path. This is the RELEASES collection, not its parent -- the
+        CLI posts here to create a release and derives its sibling routes by
+        trimming the last segment, so naming the parent puts release creation on
+        the wrong route and the bare host is fronted by a CDN that answers a
+        POST with 403 text/html.
         Example: https://app.behindgate.com/api/deploy/releases
       type: string
       default: ''
@@ -54,11 +65,11 @@ spec:
 
     download-base-url:
       description: >-
-        Override the host the CLI is downloaded from, which `env` also
-        resolves. Archives are fetched from
+        Override the host the CLI is downloaded from, which is otherwise
+        `app-origin`. Archives are fetched from
         <download-base-url>/downloads/<version>/<archive>. Needed only for a
-        host `env` does not name; the pinned checksums must match whatever it
-        serves.
+        host that serves the CLI but not the API; the pinned checksums must
+        match whatever it serves.
       type: string
       default: ''
 
@@ -89,12 +100,27 @@ spec:
   stage: $[[ inputs.stage ]]
   image: $[[ inputs.image ]]
 
+  # The job authenticates as itself: GitLab mints this token for the run and sets
+  # it in the environment, where the CLI reads it and exchanges it for a deploy
+  # token that expires with the job. Nothing long-lived is stored anywhere, and a
+  # fork cannot obtain one.
+  #
+  # `aud` is the input rather than a fixed value because the audience must be the
+  # instance the token is exchanged at, and inputs interpolate into any job key.
+  # Redefining this job REPLACES its keys, so a redefinition that drops this
+  # block leaves the job with no credential at all -- the script says so by name
+  # rather than letting it surface as a missing deploy token.
+  id_tokens:
+    BEHINDGATE_OIDC_TOKEN:
+      aud: $[[ inputs.app-origin ]]
+
   variables:
     # Inputs reach the script as environment variables rather than being pasted
     # into its text. GitLab interpolates parsed YAML values, so a path or a URL
     # containing a quote cannot turn into shell syntax here.
-    BG_ENV: $[[ inputs.env ]]
+    BG_APP_ORIGIN: $[[ inputs.app-origin ]]
     BG_PATH: $[[ inputs.path ]]
+    BG_TRUST: $[[ inputs.trust ]]
     BG_URL: $[[ inputs.url ]]
     BG_CLI_VERSION: $[[ inputs.cli-version ]]
     BG_DOWNLOAD_BASE_URL: $[[ inputs.download-base-url ]]
@@ -124,12 +150,21 @@ spec:
       # [[ ]], no pipefail.
       #
       # Reads from the environment:
-      #   BEHINDGATE_TOKEN      the deploy token, as a masked CI/CD variable
-      #   BG_ENV                the BehindGate environment, or empty for the default
-      #   BG_PATH               the folder (or .zip) to deploy
-      #   BG_URL                the pinned deploy endpoint, or empty
-      #   BG_CLI_VERSION        a pinned CLI version, or empty for the default
-      #   BG_DOWNLOAD_BASE_URL  the CLI download host, or empty for the default
+      #   BEHINDGATE_OIDC_TOKEN  the job's own OIDC token, minted by GitLab from the
+      #                          `id_tokens:` block this component declares
+      #   BEHINDGATE_TOKEN       a deploy token, for a workspace with no CI trust
+      #   BG_APP_ORIGIN          the BehindGate instance, as scheme and host
+      #   BG_PATH                the folder (or .zip) to deploy
+      #   BG_TRUST               the CI trust to exchange under, or empty
+      #   BG_URL                 the pinned deploy endpoint, or empty to derive it
+      #   BG_CLI_VERSION         a pinned CLI version, or empty for the default
+      #   BG_DOWNLOAD_BASE_URL   the CLI download host, or empty to derive it
+      #
+      # ONE INPUT NAMES THE INSTANCE. `app-origin` is the audience GitLab mints the
+      # job's token for, the origin of the deploy endpoint, and the host the CLI is
+      # downloaded from. Those three have to agree -- a token minted for one audience
+      # cannot be exchanged at another -- and deriving them from a single value is what
+      # makes disagreement unrepresentable rather than merely discouraged.
       #
       # THE PROJECT DIRECTORY IS READ-ONLY. This component uploads a directory; that
       # is its whole contract, and it needs nothing written back to do it. The CLI it
@@ -149,46 +184,88 @@ spec:
 
       echo "--- BehindGate deploy: preflight"
 
-      # An unset CI/CD variable expands to an empty string rather than failing the
-      # pipeline, so this is by far the most common way the job goes wrong.
-      if [ -z "${BEHINDGATE_TOKEN:-}" ]; then
-        bg_fail \
-          'BEHINDGATE_TOKEN is empty.' \
-          '' \
-          'A CI/CD variable that is not set expands to an empty string rather than' \
-          'failing the pipeline, so this usually means the variable is missing, or' \
-          'that it is marked "Protected" while this pipeline runs on an unprotected' \
-          'branch or tag.' \
-          '' \
-          'Add it under Settings -> CI/CD -> Variables as a masked variable. Never' \
-          'pass the token as a component input: inputs are plainly visible in the' \
-          'fully expanded pipeline configuration.'
-      fi
-
-      # The CLI exits 2 for a malformed token, which is also how it reports a bad path
-      # and an endpoint mismatch. Checking the shape here separates a mangled variable
-      # from a genuine deploy failure. The value is never echoed -- only a count and a
-      # character class are derived from it.
-      bg_dots=$(printf '%s' "$BEHINDGATE_TOKEN" | tr -cd '.' | wc -c | tr -d ' ')
-      bg_stray=$(printf '%s' "$BEHINDGATE_TOKEN" | tr -d 'A-Za-z0-9_.-' | wc -c | tr -d ' ')
+      # The CLI exits 2 for a malformed credential, which is also how it reports a bad
+      # path and an endpoint mismatch. Checking the shape here separates a mangled
+      # variable from a genuine deploy failure. The value is never echoed -- only a dot
+      # count and a character class are derived from it.
+      #
       # A leading dot or a doubled dot means an empty header or payload segment, both
       # of which the Action rejects too. A TRAILING dot is deliberately allowed: that
       # is an empty signature, and the Action's check requires only the first two
       # segments to be non-empty. The two implementations cannot import each other, so
       # the corpus in test/integration/gitlab-deploy.test.js is what keeps them level.
-      case "$BEHINDGATE_TOKEN" in
-        .* | *..*) bg_dots=0 ;;
-      esac
-      if [ "$bg_dots" != "2" ] || [ "$bg_stray" != "0" ]; then
+      bg_is_jwt() {
+        bg_dots=$(printf '%s' "$1" | tr -cd '.' | wc -c | tr -d ' ')
+        bg_stray=$(printf '%s' "$1" | tr -d 'A-Za-z0-9_.-' | wc -c | tr -d ' ')
+
+        case "$1" in
+          .* | *..*) return 1 ;;
+        esac
+
+        [ "$bg_dots" = "2" ] && [ "$bg_stray" = "0" ]
+      }
+
+      # Credential selection, matching the CLI's own order: a deploy token set in the
+      # environment is used as-is, and only its absence takes the OIDC path.
+      #
+      # OIDC is what this component is built around -- GitLab mints the token from the
+      # `id_tokens:` block on the job, so it is present with nothing to configure and
+      # no long-lived secret stored anywhere. BEHINDGATE_TOKEN stays supported as the
+      # fallback for a workspace that has no CI trust covering this project.
+      BG_CREDENTIAL=oidc
+
+      if [ -n "${BEHINDGATE_TOKEN:-}" ]; then
+        BG_CREDENTIAL=token
+
+        if ! bg_is_jwt "$BEHINDGATE_TOKEN"; then
+          bg_fail \
+            'BEHINDGATE_TOKEN is set but is not a well-formed JWT.' \
+            '' \
+            'A BehindGate deploy token has three base64url segments separated by dots' \
+            '(header.payload.signature). The value supplied does not, which usually' \
+            'means it was truncated, wrapped across lines, or quoted when it was' \
+            'stored as a CI/CD variable.' \
+            '' \
+            'Re-copy it from the workspace dashboard under Settings -> Deploy tokens,' \
+            'or unset the variable entirely to authenticate as the job over OIDC.'
+        fi
+
+        echo "Authenticating with BEHINDGATE_TOKEN (a deploy token)."
+        echo "OIDC needs no stored secret and issues a credential that expires with the job;"
+        echo "unset BEHINDGATE_TOKEN once the workspace has a CI trust for this project."
+      elif [ -n "${BEHINDGATE_OIDC_TOKEN:-}" ]; then
+        # Minted by GitLab, so a malformed value here is not a mistyped variable --
+        # it means the job was redefined and something else now sets this name.
+        if ! bg_is_jwt "$BEHINDGATE_OIDC_TOKEN"; then
+          bg_fail \
+            'BEHINDGATE_OIDC_TOKEN is not a well-formed JWT.' \
+            '' \
+            'GitLab sets this variable from the `id_tokens:` block on the job, and what' \
+            'it mints is always a JWT -- so a value of another shape means the job was' \
+            'redefined with a `variables:` entry of the same name, which shadows it.'
+        fi
+
+        echo "Authenticating as this job over OIDC."
+      else
         bg_fail \
-          'BEHINDGATE_TOKEN is not a well-formed JWT.' \
+          'This job has no credential: neither BEHINDGATE_OIDC_TOKEN nor BEHINDGATE_TOKEN is set.' \
           '' \
-          'A BehindGate deploy token has three base64url segments separated by dots' \
-          '(header.payload.signature). The value supplied does not, which usually' \
-          'means it was truncated, wrapped across lines, or quoted when it was stored' \
-          'as a CI/CD variable.' \
+          'BEHINDGATE_OIDC_TOKEN is normally supplied by GitLab itself, from the' \
+          '`id_tokens:` block this component puts on the job. It is missing here, which' \
+          'means the job was redefined in your .gitlab-ci.yml without carrying that' \
+          'block over -- redefining a job REPLACES its keys rather than merging them.' \
           '' \
-          'Re-copy it from the workspace dashboard under Settings -> Deploy tokens.'
+          'Either restore it:' \
+          '' \
+          '    behindgate-deploy:' \
+          '      id_tokens:' \
+          '        BEHINDGATE_OIDC_TOKEN:' \
+          '          aud: <the same value as the `app-origin` input>' \
+          '' \
+          'or set BEHINDGATE_TOKEN under Settings -> CI/CD -> Variables as a masked' \
+          'variable, to authenticate with a deploy token instead. Never pass either as' \
+          'a component input: inputs are plainly visible in the expanded pipeline' \
+          'configuration.'
       fi
 
       BG_PATH="${BG_PATH:-}"
@@ -212,21 +289,23 @@ spec:
       echo "--- BehindGate deploy: acquiring the CLI"
 
       # >>> BEGIN generated from versions.json by script/build-gitlab-template.js
-      BG_DEFAULT_ENV='prod'
-      BG_KNOWN_ENVS='prod test'
+      BG_DEPLOY_PATH='/api/deploy/releases'
+      BG_DEFAULT_ORIGIN='https://app.behindgate.com'
+      BG_KNOWN_ORIGINS='https://app.behindgate.com https://app.test.behindgate.net'
 
-      # Prints "<deploy-url> <download-base-url> <pinned|unpinned>" for an environment.
-      bg_env() {
+      # Prints "pinned" or "unpinned" for an origin this repository names.
+      bg_origin() {
         case "$1" in
-          'prod') printf '%s %s %s\n' 'https://app.behindgate.com/api/deploy/releases' 'https://app.behindgate.com' 'pinned' ;;
-          'test') printf '%s %s %s\n' 'https://app.test.behindgate.net/api/deploy/releases' 'https://app.test.behindgate.net' 'unpinned' ;;
+          'https://app.behindgate.com') printf '%s\n' 'pinned' ;;
+          'https://app.test.behindgate.net') printf '%s\n' 'unpinned' ;;
           *) return 1 ;;
         esac
       }
 
-      BG_DEFAULT_VERSION='2026.8.4'
-      BG_DEFAULT_BASE_URL='https://app.behindgate.com'
-      BG_PINNED_VERSIONS='2026.8.3 2026.8.4'
+      BG_DEFAULT_VERSION='2026.8.5'
+      BG_PINNED_VERSIONS='2026.8.3 2026.8.4 2026.8.5'
+      BG_OIDC_MIN_VERSION='2026.8.5'
+      BG_OIDC_VERSIONS='2026.8.5'
 
       # Prints "<archive> <binary> <sha256>" for a version/platform pair.
       bg_pin() {
@@ -239,53 +318,84 @@ spec:
           '2026.8.4/linux-arm64') printf '%s %s %s\n' 'bg-deploy-linux-arm64.tar.gz' 'bg-deploy' '585668505f54dbec29a3039070656b969257dd484bf1b2fafdeee4ec8c450068' ;;
           '2026.8.4/darwin-amd64') printf '%s %s %s\n' 'bg-deploy-darwin-amd64.tar.gz' 'bg-deploy' 'e07076953f12eeec676d1a1d60bc4a226357826de233c8a1104b9c5d289315fb' ;;
           '2026.8.4/darwin-arm64') printf '%s %s %s\n' 'bg-deploy-darwin-arm64.tar.gz' 'bg-deploy' '100e5eae8496efddadec2b24776f0552143e641a870ce1b3cd323a846490f2b3' ;;
+          '2026.8.5/linux-amd64') printf '%s %s %s\n' 'bg-deploy-linux-amd64.tar.gz' 'bg-deploy' 'ffdf4d3335d2e2c43b8c42a0f7169e8571479ee350426c0a12d1d03e4ef1e806' ;;
+          '2026.8.5/linux-arm64') printf '%s %s %s\n' 'bg-deploy-linux-arm64.tar.gz' 'bg-deploy' 'c750633080bb858534d095c383d5a23dbdd977cffe6f252d169c3b4bb7638b2c' ;;
+          '2026.8.5/darwin-amd64') printf '%s %s %s\n' 'bg-deploy-darwin-amd64.tar.gz' 'bg-deploy' '39b46091412e021c21e413e83f5f3272d3dd2746d5e2e82bc991022b7e644665' ;;
+          '2026.8.5/darwin-arm64') printf '%s %s %s\n' 'bg-deploy-darwin-arm64.tar.gz' 'bg-deploy' 'a54f22a290416d01d0faf5c0ad4f309ab81916861158cdd0f869e56479cca9f8' ;;
           *) return 1 ;;
         esac
       }
       # <<< END generated
 
-      # `env` selects both addresses that have to agree: the deploy endpoint and the
-      # host the CLI is downloaded from. They are not the same URL and neither derives
-      # from the other, so both come from the table above.
-      # Trimmed at the ends and lowercased, because resolveEnvironment() does exactly
-      # that before its lookup. An interior space is left alone so it still fails in
-      # both: the point is that the two agree, not that either is lenient.
-      BG_ENV=$(printf '%s' "${BG_ENV:-}" | sed 's/^[[:space:]]*//; s/[[:space:]]*$//' | tr 'A-Z' 'a-z')
-      [ -n "$BG_ENV" ] || BG_ENV="$BG_DEFAULT_ENV"
+      # `app-origin` names the BehindGate instance, and everything addressed follows
+      # from it: the audience GitLab minted the job's token for, the deploy endpoint,
+      # and the host the CLI is downloaded from. Trailing slashes are dropped so the
+      # derived endpoint has exactly one separator.
+      BG_APP_ORIGIN=$(printf '%s' "${BG_APP_ORIGIN:-}" | sed 's/^[[:space:]]*//; s/[[:space:]]*$//; s:/*$::')
+      [ -n "$BG_APP_ORIGIN" ] || BG_APP_ORIGIN="$BG_DEFAULT_ORIGIN"
 
-      if ! bg_entry=$(bg_env "$BG_ENV"); then
-        bg_fail \
-          "Unknown \`env\` input \"$BG_ENV\"." \
-          "Valid values: $BG_KNOWN_ENVS." \
-          '' \
-          'The environment selects both the deploy endpoint and the host the CLI is' \
-          'downloaded from, so an unrecognised value is refused rather than falling' \
-          'back to a default and deploying somewhere you did not ask for.'
-      fi
-      BG_ENV_URL=$(printf '%s' "$bg_entry" | cut -d' ' -f1)
-      BG_ENV_BASE=$(printf '%s' "$bg_entry" | cut -d' ' -f2)
-      BG_ENV_PINNED=$(printf '%s' "$bg_entry" | cut -d' ' -f3)
-
-      # `url` and `download-base-url` win over `env`: an explicit value must never be
-      # quietly replaced by one derived from a shorthand.
-      [ -n "$BG_URL" ] || BG_URL="$BG_ENV_URL"
-
-      BG_VERSION="${BG_CLI_VERSION:-}"
-      [ -n "$BG_VERSION" ] || BG_VERSION="$BG_DEFAULT_VERSION"
-      BG_BASE="${BG_DOWNLOAD_BASE_URL:-}"
-      [ -n "$BG_BASE" ] || BG_BASE="$BG_ENV_BASE"
-      BG_BASE=$(printf '%s' "$BG_BASE" | sed 's:/*$::')
+      # An ORIGIN, not a URL: scheme and host with no path. The deploy endpoint is
+      # built by appending to it, so a value carrying a path would produce an address
+      # nobody named -- and the same value is the audience the token was minted for,
+      # where a mismatched spelling fails the exchange rather than degrading.
+      case "$BG_APP_ORIGIN" in
+        https://*/* | http://*/*)
+          bg_fail \
+            "The \`app-origin\` input ($BG_APP_ORIGIN) has a path." \
+            '' \
+            'It names the BehindGate instance as scheme and host only, for example' \
+            'https://app.behindgate.com. The deploy endpoint is derived from it as' \
+            "<app-origin>$BG_DEPLOY_PATH; to pin a different endpoint, use the \`url\` input."
+          ;;
+        https://?*) ;;
+        http://?*)
+          echo "WARNING: \`app-origin\` uses http://, so both the OIDC token and the build are" >&2
+          echo "WARNING: sent in clear text. Only ever appropriate against a local instance." >&2
+          ;;
+        *)
+          bg_fail \
+            "The \`app-origin\` input ($BG_APP_ORIGIN) is not a URL." \
+            '' \
+            'It names the BehindGate instance as scheme and host, for example' \
+            'https://app.behindgate.com.'
+          ;;
+      esac
 
       # Production publishes a version once, so a committed checksum describes it for
       # good. Test republishes under the same version, so a pin there describes the
       # build only until someone rebuilds it -- and the job then fails verification on
       # bytes that are legitimate.
-      if [ "$BG_ENV_PINNED" = "unpinned" ]; then
-        echo "WARNING: the $BG_ENV environment republishes CLI builds under the same version," >&2
-        echo "WARNING: so the checksums pinned in this component describe what it served when" >&2
-        echo "WARNING: they were captured, not necessarily what it serves now. A checksum" >&2
-        echo "WARNING: failure here means the build was replaced, not that anything is wrong." >&2
+      if bg_pinned=$(bg_origin "$BG_APP_ORIGIN"); then
+        if [ "$bg_pinned" = "unpinned" ]; then
+          echo "WARNING: $BG_APP_ORIGIN republishes CLI builds under the same version, so the" >&2
+          echo "WARNING: checksums pinned in this component describe what it served when they" >&2
+          echo "WARNING: were captured, not necessarily what it serves now. A checksum failure" >&2
+          echo "WARNING: here means the build was replaced, not that anything is wrong." >&2
+        fi
+      else
+        echo "WARNING: $BG_APP_ORIGIN is not an instance this component knows about." >&2
+        echo "WARNING: Known: $BG_KNOWN_ORIGINS." >&2
+        echo "WARNING: The download is still verified against a checksum pinned here, so an" >&2
+        echo "WARNING: unknown host cannot substitute a binary -- but it has to serve exactly" >&2
+        echo "WARNING: the build this component pins, or verification fails." >&2
       fi
+
+      # `url` and `download-base-url` win over what `app-origin` derives: an explicit
+      # value must never be quietly replaced by one built from a shorthand. Whether it
+      # was pinned is remembered, because a pinned endpoint that disagrees with a
+      # token's own claim is a diagnosis the CLI's exit code alone cannot give.
+      BG_URL_PINNED=no
+      if [ -n "$BG_URL" ]; then
+        BG_URL_PINNED=yes
+      else
+        BG_URL="$BG_APP_ORIGIN$BG_DEPLOY_PATH"
+      fi
+
+      BG_VERSION="${BG_CLI_VERSION:-}"
+      [ -n "$BG_VERSION" ] || BG_VERSION="$BG_DEFAULT_VERSION"
+      BG_BASE="${BG_DOWNLOAD_BASE_URL:-}"
+      [ -n "$BG_BASE" ] || BG_BASE="$BG_APP_ORIGIN"
+      BG_BASE=$(printf '%s' "$BG_BASE" | sed 's:/*$::')
 
       # Anything outside the published set fails loudly rather than guessing at an
       # archive name that would 404 -- or worse, return 200 with an HTML error page,
@@ -322,6 +432,27 @@ spec:
       BG_ARCHIVE=$(printf '%s' "$bg_entry" | cut -d' ' -f1)
       BG_BINARY=$(printf '%s' "$bg_entry" | cut -d' ' -f2)
       BG_SHA256=$(printf '%s' "$bg_entry" | cut -d' ' -f3)
+
+      # Checked here rather than earlier so that a version with no pinned checksum is
+      # reported as unpinned first: that is true whatever the credential, while this is
+      # only about how the job authenticates. Still before anything is downloaded.
+      #
+      # An older CLI does not read BEHINDGATE_OIDC_TOKEN at all and reports the absence
+      # of a deploy token instead, which sends you looking for a variable you
+      # deliberately did not set.
+      if [ "$BG_CREDENTIAL" = "oidc" ]; then
+        case " $BG_OIDC_VERSIONS " in
+          *" $BG_VERSION "*) ;;
+          *)
+            bg_fail \
+              "bg-deploy $BG_VERSION cannot authenticate over OIDC." \
+              "OIDC needs $BG_OIDC_MIN_VERSION or newer; pinned here: $BG_OIDC_VERSIONS." \
+              '' \
+              'Either drop the `cli-version` input so the component picks a release that' \
+              'can, or set BEHINDGATE_TOKEN to deploy with a deploy token instead.'
+            ;;
+        esac
+      fi
 
       # Resolved once, here, rather than inside bg_sha256_of. Every call to that
       # function happens in a command substitution, and an `exit` inside $(...) leaves
@@ -415,7 +546,14 @@ spec:
       BG_SOURCE="$BG_BASE/downloads/$BG_VERSION/$BG_ARCHIVE"
 
       echo "Downloading bg-deploy $BG_VERSION ($BG_PLATFORM) from $BG_SOURCE"
-      bg_download "$BG_SOURCE" "$BG_ARCHIVE_PATH" || bg_fail "Could not download $BG_SOURCE."
+      bg_download "$BG_SOURCE" "$BG_ARCHIVE_PATH" || bg_fail \
+        "Could not download $BG_SOURCE." \
+        '' \
+        'A version pinned in this component is not necessarily published on every' \
+        'instance -- the two move independently, and a path that is not published is' \
+        "answered by the CDN rather than by a 404. Check that $BG_APP_ORIGIN serves" \
+        "$BG_VERSION at /downloads/index.json, and pin \`cli-version\` to one it lists" \
+        'if it does not.'
 
       # Verified before extraction, so a tampered archive is never unpacked at all.
       bg_actual=$(bg_sha256_of "$BG_ARCHIVE_PATH")
@@ -462,8 +600,16 @@ spec:
       fi
       set -- "$@" "$BG_PATH"
 
-      # The token is already in the environment, so it never goes on the command line
-      # and cannot surface in a process listing.
+      # Only exported when it was actually asked for: the CLI resolves the workspace's
+      # single covering trust on its own, and an empty value would be a name to match
+      # rather than an absent one.
+      if [ -n "${BG_TRUST:-}" ]; then
+        BEHINDGATE_TRUST_ID="$BG_TRUST"
+        export BEHINDGATE_TRUST_ID
+      fi
+
+      # Both credentials are already in the environment, so neither goes on the command
+      # line and neither can surface in a process listing.
       set +e
       "$BG_BIN" "$@" >"$BG_OUT" 2>"$BG_ERR"
       BG_CODE=$?
@@ -492,24 +638,34 @@ spec:
         #            that goes wrong once the deploy is under way
         if [ "$BG_CODE" -eq 2 ]; then
           echo "bg-deploy rejected the request as misconfigured (exit 2)." >&2
-          if [ -n "$BG_URL" ]; then
-            # The token format and the path were checked above, so the causes this job
-            # could have caught are already ruled out. What is left is overwhelmingly
-            # the endpoint check -- and that one is security relevant, so it leads.
-            echo "Because this job already checks the token format and the path before running," >&2
-            echo "the most likely cause is that the \`url\` input does not match the endpoint" >&2
-            echo "your token was minted for. Since 2026.8.x the CLI refuses to deploy on that" >&2
-            echo "mismatch rather than silently preferring one of them." >&2
+          # The credential's shape and the path were both checked above, so the causes
+          # this job could have caught are already ruled out.
+          if [ "$BG_CREDENTIAL" = "oidc" ]; then
+            echo "This job authenticated as itself, so the exchange is what failed: the" >&2
+            echo "workspace at $BG_APP_ORIGIN has no CI trust that covers this pipeline, or the" >&2
+            echo "one it has does not match." >&2
+            echo "" >&2
+            echo "Check the trust under Settings -> CI trusts: it names a repository, and it may" >&2
+            echo "also name a branch. If more than one covers this pipeline, name the one you" >&2
+            echo "mean with the \`trust\` input." >&2
+            echo "" >&2
+            echo "If you redefined this job in your own .gitlab-ci.yml, check that the \`aud:\`" >&2
+            echo "under \`id_tokens:\` is still exactly the \`app-origin\` input ($BG_APP_ORIGIN)." >&2
+            echo "A token minted for one audience cannot be exchanged at another." >&2
+          elif [ "$BG_URL_PINNED" = "yes" ]; then
+            # A pinned `url` that disagrees with the token's own claim is the one
+            # security-relevant cause, so it leads wherever it is possible.
+            echo "The most likely cause is that the \`url\` input ($BG_URL) does not match the" >&2
+            echo "endpoint your token was minted for. Since 2026.8.x the CLI refuses to deploy" >&2
+            echo "on that mismatch rather than silently preferring one of them." >&2
             echo "" >&2
             echo "That refusal is the desired behaviour: a token whose endpoint claim disagrees" >&2
             echo "with your pinned \`url\` is exactly what a swapped variable looks like. Check" >&2
-            echo "that \`url\` names the endpoint reported when you deploy without it, and that" >&2
-            echo "the token really was issued for that environment (a test-environment token" >&2
-            echo "cannot deploy to production)." >&2
+            echo "that the token really was issued for this instance -- a test-environment token" >&2
+            echo "cannot deploy to production." >&2
           else
-            echo "Check that BEHINDGATE_TOKEN exists and is non-empty, that it is not Protected" >&2
-            echo "while this pipeline runs on an unprotected ref, and that it has not expired or" >&2
-            echo "been revoked." >&2
+            echo "Check that BEHINDGATE_TOKEN has not expired or been revoked, and that it was" >&2
+            echo "issued for $BG_APP_ORIGIN rather than for another instance." >&2
           fi
         elif [ "$BG_CODE" -eq 1 ]; then
           echo "bg-deploy failed while running (exit 1, runtime failure)." >&2

@@ -37,23 +37,61 @@ artifacts of every earlier stage by default.
 `path` should point at your build output — the folder whose *contents* become
 the site, so that `index.html` sits at the top of it.
 
-## The token is a CI/CD variable, never an input
+Note what the quick start does **not** contain: a token. The job authenticates as
+itself.
 
-Add **`BEHINDGATE_TOKEN`** under **Settings → CI/CD → Variables**, marked
-*Masked* (and *Protected*, if you deploy only from protected branches). Generate
-the value in the BehindGate dashboard under **Settings → Deploy tokens**.
+## How the job authenticates
 
-There is deliberately no `token` input. Component inputs are interpolated into
-the project's pipeline configuration, which is readable by anyone who can open
-the pipeline editor's *Full configuration* view — so a token passed as an input
-is a token published to every project member. It has to arrive as a masked
-variable, and a unit test in this repository fails if an input that looks like a
-credential is ever added.
+**By default, over OIDC.** The component puts an `id_tokens:` block on the job,
+so GitLab mints a token for the run and sets it as `BEHINDGATE_OIDC_TOKEN`. The
+CLI exchanges that for a deploy token which expires with the job. Nothing
+long-lived is stored in your project, there is no secret to rotate or to leak in
+a log, and a fork's pipeline cannot obtain one.
+
+What you need instead is a **CI trust** in the BehindGate workspace, under
+**Settings → CI trusts**: it names the repository allowed to deploy, and
+optionally the branch. The trust is what the exchange is checked against.
+
+```yaml
+include:
+  - component: $CI_SERVER_FQDN/behindgate/deploy-action/deploy@v1
+    inputs:
+      path: dist
+      # trust: my-trust    # only when several trusts cover this pipeline
+```
+
+**The audience is the instance you deploy to.** GitLab lets the job choose what
+audience its token is minted for, so the trust has to require a specific one —
+otherwise any project could mint a token for you. That audience is the
+`app-origin` input, which is also the origin of the endpoint the token is
+exchanged at. One input sets both, so they cannot be made to disagree.
+
+### The deploy token, as a fallback
+
+`BEHINDGATE_TOKEN` still works, for a workspace with no CI trust covering the
+project. Add it under **Settings → CI/CD → Variables**, marked *Masked* (and
+*Protected*, if you deploy only from protected branches), generating the value in
+the BehindGate dashboard under **Settings → Deploy tokens**.
+
+When it is set it *wins* — the CLI uses a deploy token as-is whenever one is
+present, and the component selects the same credential the CLI will, so its
+diagnostics describe the path that actually ran.
+
+There is deliberately no `token` input, and none for the OIDC token either.
+Component inputs are interpolated into the project's pipeline configuration,
+readable by anyone who can open the pipeline editor's *Full configuration* view —
+so a token passed as an input is a token published to every project member. A
+unit test in this repository fails if an input that looks like a credential is
+ever added.
 
 A *Protected* variable is not exposed to pipelines on unprotected branches; it
-expands to an empty string instead of failing. The component checks for that
-explicitly and says so, because it is the single most common way this job goes
-wrong.
+expands to an empty string rather than failing, which now means the job falls
+back to OIDC rather than failing outright.
+
+> **Requires bg-deploy 2026.8.5 or newer.** Earlier releases do not read
+> `BEHINDGATE_OIDC_TOKEN` at all. The component installs an OIDC-capable release
+> by default and refuses, before downloading anything, if `cli-version` pins one
+> that is not — pointing at the deploy token as the alternative.
 
 ## Where the component comes from
 
@@ -84,12 +122,14 @@ exists to solve, one level up.
 | Input | Required | Default | Description |
 | --- | --- | --- | --- |
 | `path` | yes | — | Folder to deploy, or an existing `.zip` to upload as-is. |
-| `env` | no | `prod` | Environment to deploy to: `prod` or `test`. Selects the deploy endpoint **and** the CLI download host together. |
-| `url` | no | from `env` | Override the deploy endpoint. Only for an endpoint `env` does not name. |
-| `cli-version` | no | `defaultVersion` from [`versions.json`](../versions.json) | Escape hatch to hold a specific `bg-deploy` version after a bad release. Normally leave unset. |
-| `download-base-url` | no | from `env` | Override the CLI download host. Only for a host `env` does not name. |
+| `app-origin` | no | `https://app.behindgate.com` | The BehindGate instance, as scheme and host with no path. Sets the OIDC audience, the deploy endpoint and the CLI download host together. |
+| `trust` | no | — | The CI trust to exchange under, when more than one covers this pipeline. Ignored when `BEHINDGATE_TOKEN` is set. |
+| `url` | no | `app-origin` + `/api/deploy/releases` | Override the deploy endpoint. Only for an instance that does not serve the API at that path. |
+| `cli-version` | no | newest pinned release that supports OIDC | Escape hatch to hold a specific `bg-deploy` version after a bad release. Normally leave unset. |
+| `download-base-url` | no | `app-origin` | Override the CLI download host. Only for a host that serves the CLI but not the API. |
 | `stage` | no | `deploy` | Stage the job runs in. |
 | `image` | no | `alpine:3.22` | Image the job runs in. Needs a POSIX shell, `tar`, `mktemp`, and `curl` or `wget`. |
+| `job-name` | no | `behindgate-deploy` | Name of the generated job. |
 
 The job also needs one writable, **exec-capable** directory outside the project
 directory to unpack the CLI into. It tries `$CI_BUILDS_DIR` first — the project
@@ -99,7 +139,6 @@ because `/tmp` is mounted `noexec` on plenty of hardened runners and the failure
 that produces is a bare "Permission denied" from a binary that was just
 verified. If neither qualifies the job says so and names both; set `TMPDIR` on
 the job to somewhere that does.
-| `job-name` | no | `behindgate-deploy` | Name of the generated job. |
 
 ## It never writes to your project directory
 
@@ -171,6 +210,13 @@ By default the job runs only on the default branch. A deploy on every branch is
 almost never what anyone wants, so that is the default you have to opt out of
 rather than into.
 
+**Redefining a job replaces its keys rather than merging them**, so a
+redefinition that includes its own `id_tokens:` drops the one the component
+declared and the job loses its credential. Overriding unrelated keys — `rules`,
+`needs`, `environment`, `tags` — is safe; the block is only at risk if you write
+one. The script says so by name if it goes missing, rather than letting it
+surface as a missing deploy token.
+
 **Sourcing the endpoint from a CI/CD variable.** Inputs are resolved when the
 configuration is assembled, so `url: $MY_VARIABLE` does not do what it looks
 like. Override `BG_URL` on the job instead:
@@ -186,37 +232,61 @@ level, and job variables take precedence over project and group variables, so a
 project variable named `BG_URL` cannot silently redirect a pinned deploy. Only an
 edit to this file can — which is the point. Prefer the literal anyway; see below.
 
-## Choosing the environment
+## Choosing the instance
 
-`env` selects the two addresses that have to agree — the deploy endpoint and the
-host the CLI is downloaded from. They are not the same URL and neither derives
-from the other, so both come from one table generated from
-[`src/core/environments.js`](../src/core/environments.js), the same file the
-Action reads. An unrecognised value is refused rather than falling back to a
-default and deploying somewhere you did not ask for.
+The Action has an `env` input — `prod` or `test`. This component deliberately
+does not, and the reason is OIDC.
+
+`aud:` is resolved when GitLab expands the configuration, while an `env` value
+would only be resolved later, by the shell inside the job. An environment
+shorthand could therefore drive the audience only by declaring *one id_token per
+environment* — so every job would be handed a credential for an instance it does
+not deploy to, and adding a third environment would silently add a third to
+everyone's pipeline.
+
+Under OIDC there is no deploy token to carry the endpoint, so the endpoint has to
+be named anyway — and its origin is exactly the audience. One value does the
+whole job:
 
 ```yaml
 include:
   - component: $CI_SERVER_FQDN/behindgate/deploy-action/deploy@v1
     inputs:
       path: dist
-      env: prod        # the default; `test` is the other
+      app-origin: https://app.behindgate.com    # the default
 ```
 
-`url` and `download-base-url` still win where you set them — an explicit value is
-never replaced by one derived from a shorthand — but you should not normally need
-either.
+That single input fixes three things that must agree: the audience GitLab mints
+the token for, the endpoint it is exchanged at, and the host the CLI is
+downloaded from. `url` and `download-base-url` still win where you set them — an
+explicit value is never replaced by a derived one — but you should not normally
+need either.
 
-**The endpoint is the releases collection**, `/api/deploy/releases`. The CLI
-posts there to create a release and derives its sibling routes by trimming that
-last segment, so naming the parent puts release creation on the wrong route, and
-the bare host is fronted by a CDN that answers a POST with `403 text/html`.
+**It is an origin, not a URL.** Scheme and host, no path. A value carrying a path
+is refused: the endpoint is built by appending to it, and the same string is the
+audience, where a different spelling fails the exchange rather than degrading.
 
-**`env: test` republishes.** Production publishes a version once, so a committed
-checksum describes it for good; the test environment rebuilds under the same
-version number, so a pin there describes what it served when the pin was
-captured. The job says so, and a checksum failure against it means the build was
-replaced rather than that anything is wrong.
+**The endpoint is the releases collection**, `app-origin` +
+`/api/deploy/releases`. The CLI posts there to create a release and derives its
+sibling routes by trimming that last segment — including `/api/deploy/oidc/token`,
+where the credential exchange happens. Naming the parent puts release creation on
+the wrong route, and the bare host is fronted by a CDN that answers a POST with
+`403 text/html`. A build-time check in
+[`script/build-gitlab-template.js`](../script/build-gitlab-template.js) refuses to
+generate the component if any environment in
+[`src/core/environments.js`](../src/core/environments.js) — the same file the
+Action reads — stops matching that convention.
+
+**Instances differ in whether they republish.** Production publishes a version
+once, so a committed checksum describes it for good; the test environment
+rebuilds under the same version number, so a pin there describes what it served
+when the pin was captured. The job says so, and a checksum failure against it
+means the build was replaced rather than that anything is wrong.
+
+**An instance this component does not name still works**, with a warning. The
+checksum is committed here rather than served by the host, so an unknown host
+cannot substitute a binary — it can only fail verification. That makes refusing
+one pointless, and would rule out local instances entirely.
 
 ## How the CLI is verified
 
@@ -252,11 +322,16 @@ POSIX shell, `tar`, `sha256sum` (or `shasum`), and `curl` or `wget` works.
 
 The CLI's two failure modes need different fixes, and are reported differently:
 
-- **exit 2 (configuration)** — rejected before deploying: a missing or malformed
-  token, a bad path, or a `url` that disagrees with the endpoint the token was
-  minted for. The component validates the token format and the path itself
-  first, so an exit 2 with `url` set is most often that endpoint mismatch, and
-  the message says so.
+- **exit 2 (configuration)** — rejected before deploying: a malformed credential,
+  a bad path, a failed OIDC exchange, or a `url` that disagrees with the endpoint
+  a deploy token was minted for. The component checks the credential's shape and
+  the path itself first, so what remains depends on how the job authenticated,
+  and the message is written for whichever one ran:
+  - *over OIDC* — the workspace has no CI trust covering this pipeline, or more
+    than one does and none was named with `trust`. If you redefined the job,
+    check that `aud:` is still exactly the `app-origin` input; a token minted for
+    one audience cannot be exchanged at another.
+  - *with a deploy token* — expired, revoked, or issued for another instance.
 - **exit 1 (runtime)** — the deploy itself failed: the endpoint rejected the
   release, the runner could not reach it, or the upload was interrupted. Often
   transient and worth retrying.

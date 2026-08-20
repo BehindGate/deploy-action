@@ -17,25 +17,36 @@ spec:
         not at the directory above it.
       type: string
 
-    env:
+    app-origin:
       description: >-
-        The BehindGate environment to deploy to: prod (default) or test. It
-        selects both addresses that have to agree -- the deploy endpoint and the
-        host the CLI is downloaded from -- which are not the same URL and do not
-        derive from one another. An unrecognised value is refused rather than
-        falling back to a default and deploying somewhere you did not ask for.
-        `url` and `download-base-url` still win where they are set.
+        The BehindGate instance to deploy to, as scheme and host with no path.
+        One value fixes three things that must agree: the audience GitLab mints
+        this job's OIDC token for, the deploy endpoint it is exchanged at, and
+        the host the CLI is downloaded from. A token minted for one audience
+        cannot be exchanged at another, so deriving all three from a single
+        input is what keeps them from disagreeing. Change it only to reach a
+        different instance -- the test environment, or a local one.
+      type: string
+      default: https://app.behindgate.com
+
+    trust:
+      description: >-
+        The CI trust to exchange this job's OIDC token under, when more than one
+        in the workspace covers this pipeline. Leave unset otherwise: the CLI
+        resolves the single covering trust on its own. Ignored when
+        BEHINDGATE_TOKEN is set, since a deploy token already names its target.
       type: string
       default: ''
 
     url:
       description: >-
-        Override the deploy endpoint that `env` resolves to. Needed only for a
-        local or development endpoint; `env` covers the published ones. This is
-        the RELEASES collection, not its parent -- the CLI posts here to create
-        a release and derives its sibling routes by trimming the last segment,
-        so naming the parent puts release creation on the wrong route and the
-        bare host is fronted by a CDN that answers a POST with 403 text/html.
+        Override the deploy endpoint, which is otherwise `app-origin` plus
+        /api/deploy/releases. Needed only where an instance does not serve the
+        API at that path. This is the RELEASES collection, not its parent -- the
+        CLI posts here to create a release and derives its sibling routes by
+        trimming the last segment, so naming the parent puts release creation on
+        the wrong route and the bare host is fronted by a CDN that answers a
+        POST with 403 text/html.
         Example: https://app.behindgate.com/api/deploy/releases
       type: string
       default: ''
@@ -54,11 +65,11 @@ spec:
 
     download-base-url:
       description: >-
-        Override the host the CLI is downloaded from, which `env` also
-        resolves. Archives are fetched from
+        Override the host the CLI is downloaded from, which is otherwise
+        `app-origin`. Archives are fetched from
         <download-base-url>/downloads/<version>/<archive>. Needed only for a
-        host `env` does not name; the pinned checksums must match whatever it
-        serves.
+        host that serves the CLI but not the API; the pinned checksums must
+        match whatever it serves.
       type: string
       default: ''
 
@@ -89,12 +100,27 @@ spec:
   stage: $[[ inputs.stage ]]
   image: $[[ inputs.image ]]
 
+  # The job authenticates as itself: GitLab mints this token for the run and sets
+  # it in the environment, where the CLI reads it and exchanges it for a deploy
+  # token that expires with the job. Nothing long-lived is stored anywhere, and a
+  # fork cannot obtain one.
+  #
+  # `aud` is the input rather than a fixed value because the audience must be the
+  # instance the token is exchanged at, and inputs interpolate into any job key.
+  # Redefining this job REPLACES its keys, so a redefinition that drops this
+  # block leaves the job with no credential at all -- the script says so by name
+  # rather than letting it surface as a missing deploy token.
+  id_tokens:
+    BEHINDGATE_OIDC_TOKEN:
+      aud: $[[ inputs.app-origin ]]
+
   variables:
     # Inputs reach the script as environment variables rather than being pasted
     # into its text. GitLab interpolates parsed YAML values, so a path or a URL
     # containing a quote cannot turn into shell syntax here.
-    BG_ENV: $[[ inputs.env ]]
+    BG_APP_ORIGIN: $[[ inputs.app-origin ]]
     BG_PATH: $[[ inputs.path ]]
+    BG_TRUST: $[[ inputs.trust ]]
     BG_URL: $[[ inputs.url ]]
     BG_CLI_VERSION: $[[ inputs.cli-version ]]
     BG_DOWNLOAD_BASE_URL: $[[ inputs.download-base-url ]]
