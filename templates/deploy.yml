@@ -200,6 +200,7 @@ spec:
 
         case "$1" in
           .* | *..*) return 1 ;;
+          *) ;;
         esac
 
         [ "$bg_dots" = "2" ] && [ "$bg_stray" = "0" ]
@@ -329,32 +330,41 @@ spec:
 
       # `app-origin` names the BehindGate instance, and everything addressed follows
       # from it: the audience GitLab minted the job's token for, the deploy endpoint,
-      # and the host the CLI is downloaded from. Trailing slashes are dropped so the
-      # derived endpoint has exactly one separator.
-      BG_APP_ORIGIN=$(printf '%s' "${BG_APP_ORIGIN:-}" | sed 's/^[[:space:]]*//; s/[[:space:]]*$//; s:/*$::')
+      # and the host the CLI is downloaded from.
+      #
+      # VALIDATED, NEVER NORMALISED. GitLab minted `aud` from the raw input when it
+      # expanded the configuration, long before this shell ran, so tidying the value
+      # here cannot change what the token already claims -- it would only make the
+      # endpoint disagree with the audience while looking tolerant about it. An
+      # audience is compared as an exact string, so a value that is not already
+      # exactly an origin has to be refused rather than repaired.
+      BG_APP_ORIGIN="${BG_APP_ORIGIN:-}"
       [ -n "$BG_APP_ORIGIN" ] || BG_APP_ORIGIN="$BG_DEFAULT_ORIGIN"
 
-      # An ORIGIN, not a URL: scheme and host with no path. The deploy endpoint is
-      # built by appending to it, so a value carrying a path would produce an address
-      # nobody named -- and the same value is the audience the token was minted for,
-      # where a mismatched spelling fails the exchange rather than degrading.
       case "$BG_APP_ORIGIN" in
-        https://*/* | http://*/*)
+        https://*/*)
           bg_fail \
-            "The \`app-origin\` input ($BG_APP_ORIGIN) has a path." \
+            "The \`app-origin\` input ($BG_APP_ORIGIN) is not a bare origin." \
             '' \
-            'It names the BehindGate instance as scheme and host only, for example' \
-            'https://app.behindgate.com. The deploy endpoint is derived from it as' \
-            "<app-origin>$BG_DEPLOY_PATH; to pin a different endpoint, use the \`url\` input."
+            'It names the BehindGate instance as scheme and host only -- no path, and' \
+            'no trailing slash. For example https://app.behindgate.com.' \
+            '' \
+            'This value is also the audience GitLab minted this job'\''s OIDC token for,' \
+            'and an audience is compared as an exact string. A trailing slash is a' \
+            'different audience rather than a tidier spelling of the same one, so it' \
+            'is refused here instead of being trimmed -- trimming it now could not' \
+            'change the token that was already minted.' \
+            '' \
+            "The deploy endpoint is derived as <app-origin>$BG_DEPLOY_PATH; to pin a" \
+            'different endpoint, use the `url` input.'
           ;;
         https://?*) ;;
-        http://?*)
-          echo "WARNING: \`app-origin\` uses http://, so both the OIDC token and the build are" >&2
-          echo "WARNING: sent in clear text. Only ever appropriate against a local instance." >&2
-          ;;
         *)
+          # https only, and http:// is refused rather than warned about: this value is
+          # the audience for a bearer credential. To reach a local instance, override
+          # `url` and `download-base-url` and use a deploy token instead.
           bg_fail \
-            "The \`app-origin\` input ($BG_APP_ORIGIN) is not a URL." \
+            "The \`app-origin\` input ($BG_APP_ORIGIN) is not an https:// origin." \
             '' \
             'It names the BehindGate instance as scheme and host, for example' \
             'https://app.behindgate.com.'

@@ -262,9 +262,21 @@ downloaded from. `url` and `download-base-url` still win where you set them — 
 explicit value is never replaced by a derived one — but you should not normally
 need either.
 
-**It is an origin, not a URL.** Scheme and host, no path. A value carrying a path
-is refused: the endpoint is built by appending to it, and the same string is the
-audience, where a different spelling fails the exchange rather than degrading.
+**It is an origin, not a URL.** Scheme and host — no path, and **no trailing
+slash**. Both are refused rather than tidied up, which is worth explaining
+because it looks unhelpfully strict:
+
+GitLab mints the token's `aud` from this input when it *expands the
+configuration*, long before the job's shell runs. By then the audience is fixed.
+Trimming a trailing slash inside the job could not change what the token already
+claims — it would only leave the derived endpoint disagreeing with the audience,
+while appearing to have handled it. An audience is compared as an exact string,
+so `https://app.behindgate.com/` is a *different* audience, not a tidier spelling
+of the same one. Refusing it is the only outcome that keeps the two identical.
+
+**https only.** This value is the audience for a bearer credential, so
+clear-text is not offered. To reach a local instance, override `url` and
+`download-base-url` and authenticate with a deploy token.
 
 **The endpoint is the releases collection**, `app-origin` +
 `/api/deploy/releases`. The CLI posts there to create a release and derives its

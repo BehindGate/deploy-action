@@ -456,40 +456,48 @@ describe('the GitLab component fails early on bad configuration', () => {
     });
 
     assert.notEqual(result.code, 0);
-    assert.match(result.stderr, /`app-origin` input .* has a path/);
+    assert.match(result.stderr, /`app-origin` input .* is not a bare origin/);
     assert.match(result.stderr, /use the `url` input/);
     assert.equal(downloads.requests.length, before, 'nothing may be fetched for a bad origin');
   }, { timeout: 60000 });
 
-  test('a value that is not a URL at all is refused', async (t) => {
+  test('anything that is not an https origin is refused, http:// included', async (t) => {
     if (skipReason) return t.skip(skipReason);
 
-    for (const value of ['app.behindgate.com', 'prod', 'ftp://app.behindgate.com', 'https://']) {
+    // http:// is refused rather than warned about: this value is the audience
+    // GitLab mints the job's OIDC token for, and that token is a bearer
+    // credential. `env` never allowed a clear-text instance either.
+    const corpus = [
+      'app.behindgate.com',
+      'prod',
+      'ftp://app.behindgate.com',
+      'https://',
+      'http://app.behindgate.com',
+      'http://localhost:3000',
+    ];
+
+    for (const value of corpus) {
       const result = await runComponent(makeWorkspace(), { BG_APP_ORIGIN: value });
 
       assert.notEqual(result.code, 0, `${value} must be refused`);
-      assert.match(result.stderr, /is not a URL|has a path/);
+      assert.match(result.stderr, /is not an https:\/\/ origin|is not a bare origin/);
     }
   }, { timeout: 120000 });
 
-  test('a trailing slash is tolerated rather than doubling the separator', async (t) => {
+  test('a trailing slash is refused rather than trimmed', async (t) => {
     if (skipReason) return t.skip(skipReason);
 
-    // The endpoint is this value plus /api/deploy/releases, so an unstripped
-    // slash would produce a path the API does not serve -- and the audience
-    // would be spelled differently from the endpoint it is exchanged at.
-    const capture = await startCaptureServer();
+    // GitLab mints `aud` from the raw input when it expands the configuration,
+    // so by the time this shell runs the audience is already fixed. Trimming the
+    // slash here would leave the derived endpoint disagreeing with the audience
+    // the token actually carries -- tolerant-looking, and wrong. Refusing it is
+    // the only outcome that keeps the two the same string.
+    for (const value of [`${DEFAULT_ORIGIN}/`, `${DEFAULT_ORIGIN}//`]) {
+      const result = await runComponent(makeWorkspace(), { BG_APP_ORIGIN: value });
 
-    try {
-      const result = await runComponent(makeWorkspace(), {
-        BG_APP_ORIGIN: `${DEFAULT_ORIGIN}//`,
-        BG_URL: capture.url,
-      });
-
-      assert.equal(result.code, 0, `component failed:\n${result.output}`);
-      assert.doesNotMatch(result.stderr, /is not an instance this component knows about/);
-    } finally {
-      await capture.close();
+      assert.notEqual(result.code, 0, `${value} must be refused`);
+      assert.match(result.stderr, /is not a bare origin/);
+      assert.match(result.stderr, /compared as an exact string/);
     }
   }, { timeout: 120000 });
 

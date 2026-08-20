@@ -162,7 +162,7 @@ function generateOrigins(table = environments.ENVIRONMENTS) {
     }
 
     cases.push(
-      `    '${shellSafe(origin, 'an origin')}') printf '%s\\n' ` +
+      `    '${shellSafe(origin, 'an origin')}') printf ${String.raw`'%s\n'`} ` +
         `'${environment.pinnedCli ? 'pinned' : 'unpinned'}' ;;`
     );
   }
@@ -232,7 +232,7 @@ function generatePins(table) {
     // default has to be a release that can do that. versions.json's own
     // `defaultVersion` belongs to the Action, which still has the deploy token as
     // its default path and must keep defaulting to what production serves.
-    `BG_DEFAULT_VERSION='${shellSafe(oidcCapable[oidcCapable.length - 1], 'the default version')}'`,
+    `BG_DEFAULT_VERSION='${shellSafe(oidcCapable.at(-1), 'the default version')}'`,
     `BG_PINNED_VERSIONS='${versions.map((v) => shellSafe(v, 'a version')).join(' ')}'`,
     `BG_OIDC_MIN_VERSION='${shellSafe(OIDC_MIN_VERSION, 'the minimum OIDC version')}'`,
     `BG_OIDC_VERSIONS='${oidcCapable.map((v) => shellSafe(v, 'a version')).join(' ')}'`,
