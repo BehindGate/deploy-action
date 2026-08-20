@@ -120,7 +120,6 @@ function runComponent(cwd, env = {}) {
           BEHINDGATE_OIDC_TOKEN: fakeJwt({ aud: DEFAULT_ORIGIN }),
           BG_APP_ORIGIN: '',
           BG_PATH: 'public',
-          BG_TRUST: '',
           BG_URL: '',
           BG_CLI_VERSION: '',
           BG_DOWNLOAD_BASE_URL: downloads ? downloads.url : '',

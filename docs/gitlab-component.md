@@ -52,12 +52,15 @@ What you need instead is a **CI trust** in the BehindGate workspace, under
 **Settings → CI trusts**: it names the repository allowed to deploy, and
 optionally the branch. The trust is what the exchange is checked against.
 
+**Naming a trust** is only necessary when more than one covers the same
+pipeline; otherwise the exchange resolves it on its own. There is no input for
+it — the CLI reads `BEHINDGATE_TRUST_ID` directly, and the component never
+passes `--trust`, so a variable on the job is the whole mechanism:
+
 ```yaml
-include:
-  - component: $CI_SERVER_FQDN/behindgate/deploy-action/deploy@v1
-    inputs:
-      path: dist
-      # trust: my-trust    # only when several trusts cover this pipeline
+behindgate-deploy:
+  variables:
+    BEHINDGATE_TRUST_ID: my-trust
 ```
 
 **The audience is the instance you deploy to.** GitLab lets the job choose what
@@ -123,7 +126,6 @@ exists to solve, one level up.
 | --- | --- | --- | --- |
 | `path` | yes | — | Folder to deploy, or an existing `.zip` to upload as-is. |
 | `app-origin` | no | `https://app.behindgate.com` | The BehindGate instance, as scheme and host with no path. Sets the OIDC audience, the deploy endpoint and the CLI download host together. |
-| `trust` | no | — | The CI trust to exchange under, when more than one covers this pipeline. Ignored when `BEHINDGATE_TOKEN` is set. |
 | `url` | no | `app-origin` + `/api/deploy/releases` | Override the deploy endpoint. Only for an instance that does not serve the API at that path. |
 | `cli-version` | no | newest pinned release that supports OIDC | Escape hatch to hold a specific `bg-deploy` version after a bad release. Normally leave unset. |
 | `download-base-url` | no | `app-origin` | Override the CLI download host. Only for a host that serves the CLI but not the API. |
@@ -340,7 +342,8 @@ The CLI's two failure modes need different fixes, and are reported differently:
   the path itself first, so what remains depends on how the job authenticated,
   and the message is written for whichever one ran:
   - *over OIDC* — the workspace has no CI trust covering this pipeline, or more
-    than one does and none was named with `trust`. If you redefined the job,
+    than one does and none was named with `BEHINDGATE_TRUST_ID`. If you
+    redefined the job,
     check that `aud:` is still exactly the `app-origin` input; a token minted for
     one audience cannot be exchanged at another.
   - *with a deploy token* — expired, revoked, or issued for another instance.

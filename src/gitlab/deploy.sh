@@ -15,7 +15,6 @@
 #   BEHINDGATE_TOKEN       a deploy token, for a workspace with no CI trust
 #   BG_APP_ORIGIN          the BehindGate instance, as scheme and host
 #   BG_PATH                the folder (or .zip) to deploy
-#   BG_TRUST               the CI trust to exchange under, or empty
 #   BG_URL                 the pinned deploy endpoint, or empty to derive it
 #   BG_CLI_VERSION         a pinned CLI version, or empty for the default
 #   BG_DOWNLOAD_BASE_URL   the CLI download host, or empty to derive it
@@ -470,16 +469,13 @@ if [ -n "$BG_URL" ]; then
 fi
 set -- "$@" "$BG_PATH"
 
-# Only exported when it was actually asked for: the CLI resolves the workspace's
-# single covering trust on its own, and an empty value would be a name to match
-# rather than an absent one.
-if [ -n "${BG_TRUST:-}" ]; then
-  BEHINDGATE_TRUST_ID="$BG_TRUST"
-  export BEHINDGATE_TRUST_ID
-fi
-
 # Both credentials are already in the environment, so neither goes on the command
 # line and neither can surface in a process listing.
+#
+# Nor is --trust passed. The CLI resolves the workspace's single covering trust
+# on its own, and reads BEHINDGATE_TRUST_ID where a pipeline is covered by more
+# than one -- so naming a trust needs a variable on the job rather than an input
+# here, and nothing in between to get the precedence wrong.
 set +e
 "$BG_BIN" "$@" >"$BG_OUT" 2>"$BG_ERR"
 BG_CODE=$?
@@ -517,7 +513,7 @@ if [ "$BG_CODE" -ne 0 ]; then
       echo "" >&2
       echo "Check the trust under Settings -> CI trusts: it names a repository, and it may" >&2
       echo "also name a branch. If more than one covers this pipeline, name the one you" >&2
-      echo "mean with the \`trust\` input." >&2
+      echo "mean by setting BEHINDGATE_TRUST_ID on the job." >&2
       echo "" >&2
       echo "If you redefined this job in your own .gitlab-ci.yml, check that the \`aud:\`" >&2
       echo "under \`id_tokens:\` is still exactly the \`app-origin\` input ($BG_APP_ORIGIN)." >&2

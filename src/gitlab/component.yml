@@ -29,15 +29,6 @@ spec:
       type: string
       default: https://app.behindgate.com
 
-    trust:
-      description: >-
-        The CI trust to exchange this job's OIDC token under, when more than one
-        in the workspace covers this pipeline. Leave unset otherwise: the CLI
-        resolves the single covering trust on its own. Ignored when
-        BEHINDGATE_TOKEN is set, since a deploy token already names its target.
-      type: string
-      default: ''
-
     url:
       description: >-
         Override the deploy endpoint, which is otherwise `app-origin` plus
@@ -120,7 +111,6 @@ spec:
     # containing a quote cannot turn into shell syntax here.
     BG_APP_ORIGIN: $[[ inputs.app-origin ]]
     BG_PATH: $[[ inputs.path ]]
-    BG_TRUST: $[[ inputs.trust ]]
     BG_URL: $[[ inputs.url ]]
     BG_CLI_VERSION: $[[ inputs.cli-version ]]
     BG_DOWNLOAD_BASE_URL: $[[ inputs.download-base-url ]]
