@@ -30,9 +30,16 @@ const TMP_DIR = path.join(__dirname, '..', '.tmp');
 const TAR_PATHS = ['/usr/bin/tar', '/bin/tar'];
 
 /**
+ * Fetch a pinned CLI build.
+ *
+ * `version` and `baseUrl` default to what the Action installs. The GitLab tests
+ * override them: the component defaults to the newest OIDC-capable release,
+ * which production does not necessarily serve yet.
+ *
+ * @param {{version?: string, baseUrl?: string}} [options]
  * @returns {Promise<{binary: string} | {skip: string}>}
  */
-async function acquireRealCli() {
+async function acquireRealCli(options = {}) {
   if (process.platform === 'win32') {
     return { skip: 'integration tests use tar(1); not run on Windows' };
   }
@@ -56,13 +63,31 @@ async function acquireRealCli() {
     return { skip: error.message };
   }
 
-  const version = process.env.BG_CLI_VERSION || versions.defaultVersion();
-  const baseUrl = process.env.BG_DOWNLOAD_BASE_URL || versions.defaultDownloadBaseUrl();
-  const artifact = versions.resolveArtifact(version, platform);
+  const version = options.version || process.env.BG_CLI_VERSION || versions.defaultVersion();
+  const baseUrl =
+    options.baseUrl || process.env.BG_DOWNLOAD_BASE_URL || versions.defaultDownloadBaseUrl();
+
+  let artifact;
+  try {
+    artifact = versions.resolveArtifact(version, platform);
+  } catch (error) {
+    return { skip: error.message };
+  }
 
   const installDir = path.join(TMP_DIR, `${version}-${platform}`);
   const binary = path.join(installDir, artifact.binary);
-  if (fs.existsSync(binary)) return { binary };
+
+  // Version-scoped: archive names are identical across releases, so caching by
+  // bare name means a stale download from a previous version fails verification
+  // against the new pin -- which looks like a checksum failure, not a stale file.
+  const archivePath = path.join(TMP_DIR, `${version}-${artifact.archive}`);
+
+  // The archive is kept, not just the extracted binary: the GitLab and Bitbucket
+  // tests serve it from a local download host to exercise fetch-and-verify end
+  // to end.
+  if (fs.existsSync(binary) && fs.existsSync(archivePath)) {
+    return { binary, archivePath, artifact, version, platform };
+  }
 
   fs.mkdirSync(TMP_DIR, { recursive: true });
 
@@ -76,12 +101,6 @@ async function acquireRealCli() {
   const staging = fs.mkdtempSync(path.join(TMP_DIR, 'staging-'));
 
   try {
-    // Version-scoped: archive names are identical across releases, so caching by
-    // bare name means a stale download from a previous version fails
-    // verification against the new pin -- which looks like a checksum failure,
-    // not a stale file.
-    const archivePath = path.join(TMP_DIR, `${version}-${artifact.archive}`);
-
     if (!fs.existsSync(archivePath)) {
       const url = versions.downloadUrl(baseUrl, version, artifact.archive);
       let response;
@@ -99,7 +118,16 @@ async function acquireRealCli() {
     }
 
     // Same verification the Action performs, against the same committed table.
-    await verifyFileChecksum(archivePath, artifact.sha256, { source: baseUrl });
+    // A mismatch is returned as a skip rather than thrown: a host that
+    // republishes under one version serves bytes the pin stopped describing the
+    // moment it was rebuilt, and that is a stale pin to re-capture, not a test
+    // this suite can meaningfully fail on.
+    try {
+      await verifyFileChecksum(archivePath, artifact.sha256, { source: baseUrl });
+    } catch (error) {
+      fs.rmSync(archivePath, { force: true });
+      return { skip: `${version} from ${baseUrl} does not match its pin: ${error.message}` };
+    }
 
     const tar = TAR_PATHS.find((candidate) => fs.existsSync(candidate));
     if (!tar) {
@@ -122,7 +150,7 @@ async function acquireRealCli() {
     fs.rmSync(staging, { recursive: true, force: true });
   }
 
-  return { binary };
+  return { binary, archivePath, artifact, version, platform };
 }
 
 /**

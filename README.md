@@ -7,6 +7,9 @@ Deploy a static site to [BehindGate](https://behindgate.net) in one step.
 This Action downloads the `bg-deploy` CLI, verifies it against a checksum
 committed in this repository, caches it across runs, and deploys your build.
 
+Using GitLab? The same thing ships here as a CI/CD component — see
+[`docs/gitlab-component.md`](docs/gitlab-component.md).
+
 ## Quick start
 
 ```yaml
@@ -109,7 +112,7 @@ point of the paragraph above.
 exchanges the OIDC token GitHub mints for the run for a deploy token that lives
 fifteen minutes, so the repository stores no long-lived secret at all.
 
-That needs three things:
+That needs two things:
 
 - `permissions: id-token: write` on the job, which is what mints the OIDC token;
 - a CI trust for this repository in the workspace, under **Settings → CI trusts**.
@@ -322,19 +325,55 @@ that may simply not be set.
 A runner outside that set fails with an explicit message rather than guessing at
 an archive name that would not exist.
 
-## Reusing this outside GitHub Actions
+## Outside GitHub Actions
 
-Bitbucket Pipes and a GitLab component are planned, and the CLI is the shared
-core. Everything reusable lives in [`src/core/`](src/core/) — platform
-resolution, the version/checksum table, checksum verification, output parsing,
-exit-code mapping, the environment table, and the input rules that turn a set of
-inputs into a CLI invocation — with **no `@actions/*` imports** and no
-dependencies beyond Node builtins. Only [`src/index.js`](src/index.js) touches
-the Actions toolkit.
+**GitLab** is supported today, as a CI/CD component in
+[`templates/deploy.yml`](templates/deploy.yml).
+[`docs/gitlab-component.md`](docs/gitlab-component.md) covers it in full.
 
-Neither this Action nor any future wrapper reimplements the deploy HTTP
-protocol. That lives in the CLI, so all three integrations stay thin and cannot
-drift apart.
+```yaml
+include:
+  - component: $CI_SERVER_FQDN/behindgate/deploy-action/deploy@v1
+    inputs:
+      path: dist
+```
+
+Note the absence of a token: the component declares an `id_tokens:` block, so the
+job authenticates as itself over OIDC against a CI trust in the workspace. A
+masked `BEHINDGATE_TOKEN` CI/CD variable remains supported as the fallback, and
+takes precedence when set — neither credential can be an input, because component
+inputs are visible in the project's expanded pipeline configuration.
+
+Where the Action takes `env`, the component takes `app-origin`. GitLab resolves
+`aud:` when it expands the configuration, before an `env` value could be read by
+the job's shell, so an environment shorthand could only drive the audience by
+minting every job a token per environment. Under OIDC the endpoint has to be
+named anyway, and its origin *is* the audience — one input covers the audience,
+the endpoint and the CLI download host, checked at build time against the same
+[`src/core/environments.js`](src/core/environments.js) the Action reads.
+
+Like the Pipe, the component never writes to your project directory — which
+matters more here than it sounds: `path: .` deploys that directory, so anything
+left beside your source would be published as part of your site.
+
+The CLI is the shared core, and neither wrapper reimplements the deploy HTTP
+protocol — so they stay thin and cannot drift apart in what a deploy does. What
+each *can* share depends on where it runs:
+
+- The Action runs Node on the runner, so it reuses [`src/core/`](src/core/) —
+  platform resolution, the version/checksum table, checksum verification, output
+  parsing, exit-code mapping, the environment table, and the input rules that
+  turn a set of inputs into a CLI invocation — with **no `@actions/*` imports**
+  and no dependencies beyond Node builtins. Only [`src/index.js`](src/index.js)
+  touches the Actions toolkit.
+- The component is YAML merged into *your* pipeline, and this repository is never
+  checked out on a GitLab runner. It therefore cannot call into `src/core/` at
+  all, and is POSIX shell with the checksum table inlined. That inlining is
+  generated from the same `versions.json`, so the data has one source even though
+  the code does not.
+
+A Bitbucket Pipe would follow the Action's shape rather than the component's,
+since a Pipe is a container that can carry its own Node.
 
 ## Development
 
@@ -345,8 +384,9 @@ npm test          # unit + integration
 npm run build     # bundle to dist/ with @vercel/ncc
 ```
 
-`dist/` is committed because the Action runs it directly; CI fails if it drifts
-from source.
+`npm run build` produces two committed outputs, and CI fails if either drifts
+from source: `dist/`, which the Action runs directly, and
+[`templates/deploy.yml`](templates/deploy.yml), the GitLab component.
 
 The integration tests run the **real** CLI against a local capture server using
 a syntactically valid but fake JWT, so they need no credentials and run on

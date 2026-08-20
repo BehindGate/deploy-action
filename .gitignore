@@ -5,9 +5,15 @@ coverage/
 # Scratch space used by the integration tests (downloaded CLI, captured uploads).
 test/.tmp/
 
+# Written into the job workspace by the GitLab component: the cached CLI archive
+# and the directory it is unpacked into.
+.bg-deploy-cache/
+.bg-deploy-run/
+
 .DS_Store
 .idea/
 .vscode/
 
-# NOTE: dist/ is intentionally NOT ignored. The Action runs the bundled
-# dist/index.js directly, so it must be committed. CI verifies it stays in sync.
+# NOTE: dist/ and templates/ are intentionally NOT ignored. The Action runs the
+# bundled dist/index.js directly and GitLab merges templates/deploy.yml into the
+# consumer's pipeline, so both must be committed. CI verifies they stay in sync.

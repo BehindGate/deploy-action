@@ -34,11 +34,12 @@ jobs:
           node-version-file: .node-version
           cache: npm
 
-      - run: npm ci
+      - run: npm ci --ignore-scripts
 
-      # Refuse to publish a release whose committed bundle does not match its
-      # source. The floating tag is what users actually run, so this is the last
-      # point at which a stale dist/ can be caught.
+      # Refuse to publish a release whose committed outputs do not match their
+      # source. The floating tag is what users actually run -- dist/ for the
+      # Action, templates/ for the GitLab component -- so this is the last point
+      # at which either can be caught stale.
       - name: Verify the released bundle matches source
         env:
           # Passed through the environment, never interpolated into the script.
@@ -48,8 +49,8 @@ jobs:
           TAG: ${{ inputs.tag }}
         run: |
           npm run build
-          if ! git diff --exit-code --stat -- dist/; then
-            echo "::error::dist/ in $TAG does not match a fresh build. Refusing to move the major tag."
+          if ! git diff --exit-code --stat -- dist/ templates/ src/gitlab/; then
+            echo "::error::dist/ or the GitLab component in $TAG does not match a fresh build. Refusing to move the major tag."
             exit 1
           fi
 

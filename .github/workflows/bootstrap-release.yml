@@ -64,7 +64,7 @@ jobs:
           echo "tag=$TAG" >> "$GITHUB_OUTPUT"
           echo "Releasing $TAG from $(git rev-parse --short HEAD) on main"
 
-      - run: npm ci
+      - run: npm ci --ignore-scripts
 
       # Same gate the normal release path applies: never publish a tag whose
       # committed bundle does not match its own source.

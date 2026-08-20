@@ -1,0 +1,16 @@
+# Check every text file out with LF, on every platform.
+#
+# Two committed files here are generated and byte-compared in CI: dist/index.js
+# and templates/deploy.yml. Git for Windows converts to CRLF on checkout by
+# default, which would make a freshly built file differ from the committed one
+# purely by line ending -- a drift failure with nothing actually drifting.
+#
+# It matters beyond the comparison: templates/deploy.yml carries a shell script
+# inside a YAML block scalar, and src/gitlab/deploy.sh is that script. Neither
+# should depend on the checkout settings of whoever last built them.
+* text=auto eol=lf
+
+# Binary fixtures, so they are never line-ending converted.
+*.png binary
+*.zip binary
+*.tar.gz binary
