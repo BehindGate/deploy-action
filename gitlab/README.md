@@ -15,7 +15,7 @@ pasted into a variable.
 
 ```yaml
 include:
-  - component: gitlab.com/behindgate/ci/deploy@1
+  - component: gitlab.com/behindgate/ci/deploy@2
     inputs:
       path: public
       site-url: https://docs.example.com
@@ -44,7 +44,7 @@ build:
     paths: [dist]
 
 include:
-  - component: gitlab.com/behindgate/ci/deploy@1
+  - component: gitlab.com/behindgate/ci/deploy@2
     inputs:
       path: dist
       site-url: https://docs.example.com
@@ -56,7 +56,7 @@ Deploy each merge request to its own app and tear it down when it closes.
 
 ```yaml
 include:
-  - component: gitlab.com/behindgate/ci/deploy@1
+  - component: gitlab.com/behindgate/ci/deploy@2
     inputs:
       job-name: preview
       path: dist
@@ -65,7 +65,7 @@ include:
       rules:
         - if: $CI_PIPELINE_SOURCE == "merge_request_event"
 
-  - component: gitlab.com/behindgate/ci/deploy@1
+  - component: gitlab.com/behindgate/ci/deploy@2
     inputs:
       job-name: teardown
       site-url: https://docs.example.com/preview/mr-$CI_MERGE_REQUEST_IID
@@ -93,9 +93,8 @@ a silent creation — a mistyped path cannot quietly become an app nobody looks 
 | --- | --- | --- |
 | `site-url` | *(none)* | Where the release is served: host = site, path = app. Required with a CI trust. |
 | `path` | `public` | Folder to deploy, or an existing `.zip`. Not needed with `delete-app`. |
-| `env` | `prod` | `prod` or `test`. Selects both the deploy endpoint and the host the CLI comes from. |
-| `audience` | `https://app.behindgate.com` | `aud` of the minted id_token. Must be the deploy host for `env`. |
-| `url` | *(from `env`)* | Pin the deploy endpoint. The **releases collection**, not the site URL and not the bare host. |
+| `audience` | `https://app.behindgate.com` | The BehindGate host to deploy to. Selects the endpoint, the CLI download host, and the id_token's `aud`. |
+| `url` | *(from `audience`)* | Pin the deploy endpoint. The **releases collection**, not the site URL and not the bare host. |
 | `trust-id` | *(none)* | Which CI trust to exchange under, when more than one covers the pipeline. |
 | `create-app` | `false` | Create the app `site-url` names if it is missing. |
 | `delete-app` | `false` | Delete that app and exit. |
@@ -105,10 +104,23 @@ a silent creation — a mistyped path cannot quietly become an app nobody looks 
 | `image` | `alpine:3.22` | Needs a POSIX shell, curl, tar and sha256sum. |
 | `rules` | default branch | Rules for the job. |
 
-`env: test` must also set `audience: https://app.test.behindgate.net`. The job
-checks the pair and refuses on a mismatch, because the id_token is already minted
-by the time the script runs and a wrong `aud` would otherwise surface much later
-as a refused exchange.
+`audience` is the only name for the environment, and there is deliberately no
+friendlier `prod`/`test` switch beside it. GitLab mints the id_token from the
+`id_tokens` keyword *before* the job script runs, so its `aud` is fixed before
+anything could derive it from a shorter input — and component inputs are textual
+substitution, with no conditionals to select one. Everything else is derived from
+this one value, so the two cannot disagree.
+
+Deploying to test is therefore:
+
+```yaml
+include:
+  - component: gitlab.com/behindgate/ci/deploy@2
+    inputs:
+      path: public
+      site-url: https://prototypes.example.com/hello
+      audience: https://app.test.behindgate.net
+```
 
 ## Outputs
 
@@ -134,12 +146,12 @@ and `delete-app` do not work with it.
 The job downloads `bg-deploy` from the environment's download host and checks it
 before running it.
 
-For `prod` the expected SHA256 is **committed in this component**. A checksum
+For production the expected SHA256 is **committed in this component**. A checksum
 served by the same host as the binary proves only that the download arrived
 intact — anyone able to serve a modified binary can serve a matching line beside
 it. A hash in this repository is the part that host cannot rewrite.
 
-For `test` there is nothing to pin against: that host republishes a version in
+For the test host there is nothing to pin against: it republishes a version in
 place, so a committed hash would describe a build only until someone rebuilds it.
 The job verifies against the host's own `SHA256SUMS.txt` and says in the log that
 this is integrity in transit, not provenance.

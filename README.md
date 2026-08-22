@@ -330,7 +330,7 @@ is in this repository under [`gitlab/`](gitlab/).
 
 ```yaml
 include:
-  - component: gitlab.com/behindgate/ci/deploy@1
+  - component: gitlab.com/behindgate/ci/deploy@2
     inputs:
       path: public
       site-url: https://docs.example.com

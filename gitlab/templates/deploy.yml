@@ -27,24 +27,21 @@ spec:
         uploaded as-is. Not needed with delete-app.
       default: public
 
-    env:
-      description: Which BehindGate environment to deploy to.
-      default: prod
-      options: [prod, test]
-
     audience:
       description: >-
-        The `aud` claim of the minted id_token, which the CI trust checks. It is
-        the deploy host for the chosen environment, so `env: test` has to set
-        this to https://app.test.behindgate.net. The job refuses to run on a
-        mismatch rather than failing later in the exchange.
+        The BehindGate host to deploy to. It selects the deploy endpoint and the
+        host the CLI is downloaded from, and it is the `aud` the id_token is
+        minted for, which is what the CI trust checks. Known hosts:
+        https://app.behindgate.com (production) and
+        https://app.test.behindgate.net (test).
       default: https://app.behindgate.com
 
     url:
       description: >-
-        Pin the deploy endpoint, overriding the one `env` selects. This is the
-        releases collection, e.g. https://app.behindgate.com/api/deploy/releases
-        -- not the site URL, and not the bare host.
+        Pin the deploy endpoint, overriding the one `audience` selects. This is
+        the releases collection, e.g.
+        https://app.behindgate.com/api/deploy/releases -- not the site URL, and
+        not the bare host.
       default: ''
 
     trust-id:
@@ -107,7 +104,6 @@ spec:
       aud: $[[ inputs.audience ]]
 
   variables:
-    BG_ENV: $[[ inputs.env ]]
     BG_PATH: $[[ inputs.path ]]
     BG_URL_INPUT: $[[ inputs.url ]]
     BG_AUDIENCE: $[[ inputs.audience ]]
@@ -121,35 +117,30 @@ spec:
     - |
       set -eu
 
-      # Two addresses have to agree and neither is derivable from the other by
-      # string surgery, so both are spelled out per environment: the endpoint
-      # releases are uploaded to, and the host the CLI is downloaded from.
-      case "$BG_ENV" in
-        prod)
-          BG_HOST=https://app.behindgate.com
-          BG_DEPLOY_URL=https://app.behindgate.com/api/deploy/releases
+      # `audience` is the single name for the environment. It has to be, rather
+      # than a friendlier prod/test switch: GitLab mints the id_token from the
+      # `id_tokens` keyword before this script runs, so the aud is already fixed
+      # by the time anything here could derive it, and component inputs are
+      # textual substitution with no conditionals. Deriving the rest from the
+      # one value nobody can compute makes a mismatch impossible instead of
+      # merely detected.
+      BG_HOST="$BG_AUDIENCE"
+      case "$BG_AUDIENCE" in
+        https://app.behindgate.com)
           BG_DEFAULT_VERSION=2026.8.4
           BG_PINNED=yes
           ;;
-        test)
-          BG_HOST=https://app.test.behindgate.net
-          BG_DEPLOY_URL=https://app.test.behindgate.net/api/deploy/releases
+        https://app.test.behindgate.net)
           BG_DEFAULT_VERSION=2026.8.5
           BG_PINNED=no
           ;;
         *)
-          echo "Unknown env \"$BG_ENV\". Valid values: prod, test." >&2
+          echo "Unknown audience \"$BG_AUDIENCE\"." >&2
+          echo "Known hosts: https://app.behindgate.com, https://app.test.behindgate.net" >&2
           exit 2
           ;;
       esac
-
-      # The id_token is already minted by the time this runs, so a wrong `aud`
-      # would otherwise surface as a refused exchange several steps later.
-      if [ "$BG_AUDIENCE" != "$BG_HOST" ]; then
-        echo "audience is \"$BG_AUDIENCE\" but env \"$BG_ENV\" deploys to $BG_HOST." >&2
-        echo "The CI trust checks the id_token's aud, so set: audience: $BG_HOST" >&2
-        exit 2
-      fi
+      BG_DEPLOY_URL="$BG_HOST/api/deploy/releases"
 
       if [ -n "$BG_URL_INPUT" ]; then
         BG_DEPLOY_URL="$BG_URL_INPUT"
@@ -210,7 +201,7 @@ spec:
           echo "$BG_ARCHIVE is not listed in the host's SHA256SUMS.txt." >&2
           exit 1
         }
-        echo "Verifying against the host's own SHA256SUMS.txt: integrity in transit, not provenance ($BG_ENV republishes builds)"
+        echo "Verifying against the host's own SHA256SUMS.txt: integrity in transit, not provenance ($BG_HOST republishes builds)"
       fi
       (cd "$BG_WORK" && sha256sum -c SHA256)
 
