@@ -50,6 +50,33 @@ include:
       site-url: https://docs.example.com
 ```
 
+## A subgroup of prototypes
+
+Where a group of short-lived projects each want a path on one site, the path can
+come from the project itself instead of being written out per project — the
+input is expanded at job runtime, so predefined variables work inside it:
+
+```yaml
+include:
+  - component: gitlab.com/behindgate/ci/deploy@2
+    inputs:
+      path: public
+      site-url: https://prototypes.example.com/$CI_PROJECT_NAME
+      create-app: true
+```
+
+Every project in the group then carries the same four lines and lands on its own
+path. `$CI_PROJECT_PATH_SLUG` instead of `$CI_PROJECT_NAME` gives an
+instance-unique value, at the cost of a longer URL; two projects named `docs` in
+different groups otherwise collide on one path, and the CI trust does not catch
+that because it scopes to the site rather than to a path within it.
+
+Do this for apps whose URL nobody has bookmarked. **With `create-app`, renaming
+the project silently relocates the app**: the next pipeline derives a new path,
+finds nothing there, creates a second app, and leaves the old one serving the
+last release at the URL people were using. Nothing fails, which is what makes it
+worth avoiding. For an app that is a product surface, write the path literally.
+
 ## Per-merge-request previews
 
 Deploy each merge request to its own app and tear it down when it closes.
