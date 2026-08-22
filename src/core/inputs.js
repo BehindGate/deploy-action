@@ -4,8 +4,8 @@
  * Turn the Action's raw string inputs into a CLI invocation.
  *
  * Pure, dependency-free: no `@actions/*` imports and no filesystem access, so
- * the planned Bitbucket Pipe and GitLab component can reuse the same rules and
- * the whole input contract is unit-testable without a runner.
+ * the planned Bitbucket Pipe can reuse the same rules and the whole input
+ * contract is unit-testable without a runner.
  *
  * Everything here is about catching a misconfiguration before the CLI is even
  * downloaded. The CLI rejects these combinations too, but it does so as a bare

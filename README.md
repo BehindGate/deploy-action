@@ -322,19 +322,44 @@ that may simply not be set.
 A runner outside that set fails with an explicit message rather than guessing at
 an archive name that would not exist.
 
+## GitLab CI
+
+GitLab has its own integration, a CI/CD catalog component published from
+[gitlab.com/behindgate/ci](https://gitlab.com/behindgate/ci). Its source
+is in this repository under [`gitlab/`](gitlab/).
+
+```yaml
+include:
+  - component: gitlab.com/behindgate/ci/deploy@2
+    inputs:
+      path: public
+      site-url: https://docs.example.com
+```
+
+It is a shell job rather than a port of this Action, because the CLI already
+speaks GitLab: `bg-deploy` reads the id_token from `BEHINDGATE_OIDC_TOKEN` and
+performs the exchange itself, so there is nothing for a wrapper to translate.
+The component only downloads the CLI, verifies it, and runs it.
+
 ## Reusing this outside GitHub Actions
 
-Bitbucket Pipes and a GitLab component are planned, and the CLI is the shared
-core. Everything reusable lives in [`src/core/`](src/core/) — platform
-resolution, the version/checksum table, checksum verification, output parsing,
-exit-code mapping, the environment table, and the input rules that turn a set of
-inputs into a CLI invocation — with **no `@actions/*` imports** and no
-dependencies beyond Node builtins. Only [`src/index.js`](src/index.js) touches
-the Actions toolkit.
+The CLI is the shared core, and it takes its whole contract from the
+environment: `BEHINDGATE_TOKEN`, `BEHINDGATE_URL`, `BEHINDGATE_SITE_URL`,
+`BEHINDGATE_OIDC_TOKEN` and `BEHINDGATE_TRUST_ID`. A CI system that can set
+environment variables and run a binary needs no wrapper at all — which is what
+the GitLab component above demonstrates.
 
-Neither this Action nor any future wrapper reimplements the deploy HTTP
-protocol. That lives in the CLI, so all three integrations stay thin and cannot
-drift apart.
+What a wrapper adds is everything around that call, and the reusable half of it
+lives in [`src/core/`](src/core/) — platform resolution, the version/checksum
+table, checksum verification, output parsing, exit-code mapping, the environment
+table, and the input rules that turn a set of inputs into a CLI invocation —
+with **no `@actions/*` imports** and no dependencies beyond Node builtins. Only
+[`src/index.js`](src/index.js) touches the Actions toolkit. A Bitbucket Pipe,
+which runs a container rather than a shell snippet, is the case that would reuse
+it.
+
+No integration reimplements the deploy HTTP protocol. That lives in the CLI, so
+they stay thin and cannot drift apart.
 
 ## Development
 

@@ -28564,8 +28564,8 @@ module.exports = {
  * Turn the Action's raw string inputs into a CLI invocation.
  *
  * Pure, dependency-free: no `@actions/*` imports and no filesystem access, so
- * the planned Bitbucket Pipe and GitLab component can reuse the same rules and
- * the whole input contract is unit-testable without a runner.
+ * the planned Bitbucket Pipe can reuse the same rules and the whole input
+ * contract is unit-testable without a runner.
  *
  * Everything here is about catching a misconfiguration before the CLI is even
  * downloaded. The CLI rejects these combinations too, but it does so as a bare
@@ -29055,8 +29055,8 @@ module.exports = {
 /**
  * Runner platform resolution.
  *
- * Pure, dependency-free: no `@actions/*` imports, so Bitbucket Pipes and the
- * GitLab component can reuse this unchanged.
+ * Pure, dependency-free: no `@actions/*` imports, so Bitbucket Pipes can reuse
+ * this unchanged.
  */
 
 class UnsupportedPlatformError extends Error {
@@ -29440,9 +29440,12 @@ module.exports = {
  *
  * This file is the ONLY place `@actions/*` may be imported. Everything with
  * reusable logic lives in `src/core/`, which stays runner-agnostic so the
- * planned Bitbucket Pipe and GitLab component can share it. This Action is a
- * thin wrapper around the bg-deploy CLI and deliberately does not reimplement
- * the deploy HTTP protocol.
+ * planned Bitbucket Pipe can share it. This Action is a thin wrapper around the
+ * bg-deploy CLI and deliberately does not reimplement the deploy HTTP protocol.
+ *
+ * GitLab is served by a component under `gitlab/` instead of a wrapper: the CLI
+ * reads its id_token from `BEHINDGATE_OIDC_TOKEN` and exchanges it itself, so a
+ * shell job covers everything this file does for Actions.
  */
 
 const path = __nccwpck_require__(6760);

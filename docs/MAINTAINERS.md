@@ -285,6 +285,53 @@ values — that silently drops verification for the other environment.
 > platforms. If a checksum job reports unreachability rather than a mismatch,
 > suspect the hostname before suspecting the pins.
 
+## The GitLab component
+
+`gitlab/` holds the source of the CI/CD catalog component published at
+[gitlab.com/behindgate/ci](https://gitlab.com/behindgate/ci). This
+repository is where it is edited and reviewed; the GitLab project only exists to
+publish it.
+
+It is not a wrapper. `bg-deploy` reads its id_token from `BEHINDGATE_OIDC_TOKEN`
+and performs the exchange itself, so `templates/deploy.yml` is a shell job that
+downloads the CLI, verifies it, and runs it. Nothing in `src/core/` is shared
+with it, which means **a change to the Action's behaviour does not reach GitLab
+on its own** — the two have to be kept in step by hand.
+
+Two things live in the component that also live here, and both have to move
+together:
+
+- the **pinned checksums** in `templates/deploy.yml`, a subset of
+  [`versions.json`](../versions.json): `linux-amd64` and `linux-arm64` only, since
+  a GitLab runner is one of those. Bump them in the same change as `versions.json`.
+- the **default CLI version per host**, which is `versions.json`'s
+  `defaultVersion` for `app.behindgate.com` and whatever `app.test.behindgate.net`
+  currently publishes.
+
+The component has no `prod`/`test` input. `audience` names the host and
+everything else derives from it, because GitLab mints the id_token from the
+`id_tokens` keyword before the job script runs: its `aud` is fixed before
+anything could derive it, and component inputs have no conditionals. Adding a
+host means a new arm in that `case` and, if it pins, a new checksum.
+
+There is no mirroring: both GitLab groups are on the free plan, where pull
+mirroring is unavailable. Publishing a change is a manual push and a tag:
+
+```bash
+git clone https://gitlab.com/behindgate/ci.git /tmp/bg-components
+cp -r gitlab/. /tmp/bg-components/
+cd /tmp/bg-components && git add -A && git commit && git push
+git tag -a v1.1.0 -m "..." && git push origin v1.1.0
+```
+
+The tag is what publishes: the project's own `.gitlab-ci.yml` runs `release-cli`
+on a tag, and the catalog lists tags that have a release. Consumers pin
+`@2`, so a `v2.x` tag reaches them without them editing anything — which is also
+why a breaking input change needs `v3`, not `v2.x`.
+
+Note the tag prefix. A `v1.0.0` tag resolves as `@v1.0.0` or `@1`, but **not** as
+`@1.0.0`.
+
 ## Upstream CLI work
 
 Several limitations in this Action are really limitations of the CLI's release

@@ -281,6 +281,13 @@ the human line is what someone reading a log actually wants.
 
 ## 6. Endpoint pinning: env var, precedence, mismatch detection
 
+**Delivered in 2026.8.5.** `BEHINDGATE_URL` is accepted and `--url` wins over it,
+as asked below. The same release went further than this section did and put the
+whole contract in the environment — `BEHINDGATE_SITE_URL`, `BEHINDGATE_OIDC_TOKEN`
+and `BEHINDGATE_TRUST_ID` alongside it — which is what let the GitLab component in
+[`gitlab/`](../gitlab/) be a shell job instead of a wrapper. `--require-url-match`
+is the one item here still open.
+
 **Problem.** `--url` is the only way to pin the deploy endpoint. Verified by
 testing: exporting `BEHINDGATE_URL` has no effect — with a token claiming a dead
 port and `BEHINDGATE_URL` pointing at a live server, the CLI tried the dead port
@@ -297,7 +304,8 @@ because it is believed.
 
 The real reason to add it is portability — Bitbucket Pipes and GitLab components
 are configured through environment variables, not argv — and it will increase how
-many people pin at all.
+many people pin at all. That has since paid off: the GitLab component sets
+`BEHINDGATE_URL` and never builds an argv the consumer can see.
 
 **Do this.**
 
