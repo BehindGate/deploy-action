@@ -1,7 +1,10 @@
-# Deploy to BehindGate
+# BehindGate CI components
 
-Deploy a static site to [BehindGate](https://behindgate.net) from GitLab CI in
-one `include`.
+GitLab CI/CD components for [BehindGate](https://behindgate.net). One so far:
+
+## `deploy`
+
+Deploy a static site to BehindGate from GitLab CI in one `include`.
 
 The pipeline stores no long-lived secret. The job mints an OIDC token for the
 run and the `bg-deploy` CLI exchanges it for a deploy token that lives fifteen
@@ -12,7 +15,7 @@ pasted into a variable.
 
 ```yaml
 include:
-  - component: gitlab.com/behindgate/deploy/deploy@1
+  - component: gitlab.com/behindgate/ci/deploy@1
     inputs:
       path: public
       site-url: https://docs.example.com
@@ -41,7 +44,7 @@ build:
     paths: [dist]
 
 include:
-  - component: gitlab.com/behindgate/deploy/deploy@1
+  - component: gitlab.com/behindgate/ci/deploy@1
     inputs:
       path: dist
       site-url: https://docs.example.com
@@ -53,7 +56,7 @@ Deploy each merge request to its own app and tear it down when it closes.
 
 ```yaml
 include:
-  - component: gitlab.com/behindgate/deploy/deploy@1
+  - component: gitlab.com/behindgate/ci/deploy@1
     inputs:
       job-name: preview
       path: dist
@@ -62,7 +65,7 @@ include:
       rules:
         - if: $CI_PIPELINE_SOURCE == "merge_request_event"
 
-  - component: gitlab.com/behindgate/deploy/deploy@1
+  - component: gitlab.com/behindgate/ci/deploy@1
     inputs:
       job-name: teardown
       site-url: https://docs.example.com/preview/mr-$CI_MERGE_REQUEST_IID

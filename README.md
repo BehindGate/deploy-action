@@ -325,12 +325,12 @@ an archive name that would not exist.
 ## GitLab CI
 
 GitLab has its own integration, a CI/CD catalog component published from
-[gitlab.com/behindgate/deploy](https://gitlab.com/behindgate/deploy). Its source
+[gitlab.com/behindgate/ci](https://gitlab.com/behindgate/ci). Its source
 is in this repository under [`gitlab/`](gitlab/).
 
 ```yaml
 include:
-  - component: gitlab.com/behindgate/deploy/deploy@1
+  - component: gitlab.com/behindgate/ci/deploy@1
     inputs:
       path: public
       site-url: https://docs.example.com

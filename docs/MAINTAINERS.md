@@ -288,7 +288,7 @@ values — that silently drops verification for the other environment.
 ## The GitLab component
 
 `gitlab/` holds the source of the CI/CD catalog component published at
-[gitlab.com/behindgate/deploy](https://gitlab.com/behindgate/deploy). This
+[gitlab.com/behindgate/ci](https://gitlab.com/behindgate/ci). This
 repository is where it is edited and reviewed; the GitLab project only exists to
 publish it.
 
@@ -312,9 +312,9 @@ There is no mirroring: both GitLab groups are on the free plan, where pull
 mirroring is unavailable. Publishing a change is a manual push and a tag:
 
 ```bash
-git clone https://gitlab.com/behindgate/deploy.git /tmp/bg-component
-cp -r gitlab/. /tmp/bg-component/
-cd /tmp/bg-component && git add -A && git commit && git push
+git clone https://gitlab.com/behindgate/ci.git /tmp/bg-components
+cp -r gitlab/. /tmp/bg-components/
+cd /tmp/bg-components && git add -A && git commit && git push
 git tag -a v1.1.0 -m "..." && git push origin v1.1.0
 ```
 
