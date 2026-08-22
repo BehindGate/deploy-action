@@ -3,8 +3,8 @@
 /**
  * Runner platform resolution.
  *
- * Pure, dependency-free: no `@actions/*` imports, so Bitbucket Pipes and the
- * GitLab component can reuse this unchanged.
+ * Pure, dependency-free: no `@actions/*` imports, so Bitbucket Pipes can reuse
+ * this unchanged.
  */
 
 class UnsupportedPlatformError extends Error {

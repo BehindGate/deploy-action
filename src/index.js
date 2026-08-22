@@ -5,9 +5,12 @@
  *
  * This file is the ONLY place `@actions/*` may be imported. Everything with
  * reusable logic lives in `src/core/`, which stays runner-agnostic so the
- * planned Bitbucket Pipe and GitLab component can share it. This Action is a
- * thin wrapper around the bg-deploy CLI and deliberately does not reimplement
- * the deploy HTTP protocol.
+ * planned Bitbucket Pipe can share it. This Action is a thin wrapper around the
+ * bg-deploy CLI and deliberately does not reimplement the deploy HTTP protocol.
+ *
+ * GitLab is served by a component under `gitlab/` instead of a wrapper: the CLI
+ * reads its id_token from `BEHINDGATE_OIDC_TOKEN` and exchanges it itself, so a
+ * shell job covers everything this file does for Actions.
  */
 
 const path = require('node:path');

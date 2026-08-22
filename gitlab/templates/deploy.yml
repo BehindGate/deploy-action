@@ -1,0 +1,247 @@
+# Deploy a static build to BehindGate from GitLab CI.
+#
+# The CLI this job runs, bg-deploy, authenticates as the pipeline itself: it
+# exchanges the OIDC token GitLab mints for the job for a deploy token that
+# lives fifteen minutes, so the project stores no long-lived secret. The
+# `id_tokens` block below is what mints it, and naming the token
+# BEHINDGATE_OIDC_TOKEN is what hands it to the CLI.
+#
+# A deploy token still works for a project that has no CI trust: set
+# BEHINDGATE_TOKEN as a masked CI/CD variable and the CLI prefers it. It is
+# deliberately not an input -- an input is written into the pipeline definition
+# and echoed in the job log, which is not where a credential belongs.
+
+spec:
+  inputs:
+    site-url:
+      description: >-
+        What to deploy to, as the URL it serves on: the host names the site and
+        the path names the app. Required for a CI trust; a deploy token already
+        names its target, so leave it unset when using BEHINDGATE_TOKEN.
+      default: ''
+
+    path:
+      description: >-
+        The folder to deploy, whose *contents* become the app, so that
+        index.html sits at the top of it. May also be an existing .zip, which is
+        uploaded as-is. Not needed with delete-app.
+      default: public
+
+    env:
+      description: Which BehindGate environment to deploy to.
+      default: prod
+      options: [prod, test]
+
+    audience:
+      description: >-
+        The `aud` claim of the minted id_token, which the CI trust checks. It is
+        the deploy host for the chosen environment, so `env: test` has to set
+        this to https://app.test.behindgate.net. The job refuses to run on a
+        mismatch rather than failing later in the exchange.
+      default: https://app.behindgate.com
+
+    url:
+      description: >-
+        Pin the deploy endpoint, overriding the one `env` selects. This is the
+        releases collection, e.g. https://app.behindgate.com/api/deploy/releases
+        -- not the site URL, and not the bare host.
+      default: ''
+
+    trust-id:
+      description: >-
+        Which CI trust to exchange under. Only needed when more than one trust
+        in the workspace covers this pipeline.
+      default: ''
+
+    create-app:
+      description: >-
+        Create the app `site-url` names if it is not there yet. Needs a trust
+        holding "create apps". Without it a missing app is an error, so a
+        mistyped path cannot quietly become an app nobody looks at.
+      type: boolean
+      default: false
+
+    delete-app:
+      description: >-
+        Delete the app `site-url` names and exit, for tearing a preview down.
+        Uploads nothing. A path with no app succeeds, so the job is safe to
+        re-run.
+      type: boolean
+      default: false
+
+    cli-version:
+      description: >-
+        Pin a specific bg-deploy version. Empty takes the version this component
+        was released against for the chosen environment.
+      default: ''
+
+    job-name:
+      description: Name of the job this component contributes.
+      default: deploy
+
+    stage:
+      description: Stage the job runs in.
+      default: deploy
+
+    image:
+      description: >-
+        Image the job runs in. Needs a POSIX shell, curl, tar and sha256sum.
+      default: alpine:3.22
+
+    rules:
+      description: >-
+        Rules for the job. The default deploys the default branch only.
+      type: array
+      default:
+        - if: $CI_COMMIT_BRANCH == $CI_DEFAULT_BRANCH
+
+---
+
+"$[[ inputs.job-name ]]":
+  stage: $[[ inputs.stage ]]
+  image: $[[ inputs.image ]]
+  rules: $[[ inputs.rules ]]
+
+  id_tokens:
+    BEHINDGATE_OIDC_TOKEN:
+      aud: $[[ inputs.audience ]]
+
+  variables:
+    BG_ENV: $[[ inputs.env ]]
+    BG_PATH: $[[ inputs.path ]]
+    BG_URL_INPUT: $[[ inputs.url ]]
+    BG_AUDIENCE: $[[ inputs.audience ]]
+    BG_CLI_VERSION: $[[ inputs.cli-version ]]
+    BG_CREATE_APP: $[[ inputs.create-app ]]
+    BG_DELETE_APP: $[[ inputs.delete-app ]]
+    BEHINDGATE_SITE_URL: $[[ inputs.site-url ]]
+    BEHINDGATE_TRUST_ID: $[[ inputs.trust-id ]]
+
+  script:
+    - |
+      set -eu
+
+      # Two addresses have to agree and neither is derivable from the other by
+      # string surgery, so both are spelled out per environment: the endpoint
+      # releases are uploaded to, and the host the CLI is downloaded from.
+      case "$BG_ENV" in
+        prod)
+          BG_HOST=https://app.behindgate.com
+          BG_DEPLOY_URL=https://app.behindgate.com/api/deploy/releases
+          BG_DEFAULT_VERSION=2026.8.4
+          BG_PINNED=yes
+          ;;
+        test)
+          BG_HOST=https://app.test.behindgate.net
+          BG_DEPLOY_URL=https://app.test.behindgate.net/api/deploy/releases
+          BG_DEFAULT_VERSION=2026.8.5
+          BG_PINNED=no
+          ;;
+        *)
+          echo "Unknown env \"$BG_ENV\". Valid values: prod, test." >&2
+          exit 2
+          ;;
+      esac
+
+      # The id_token is already minted by the time this runs, so a wrong `aud`
+      # would otherwise surface as a refused exchange several steps later.
+      if [ "$BG_AUDIENCE" != "$BG_HOST" ]; then
+        echo "audience is \"$BG_AUDIENCE\" but env \"$BG_ENV\" deploys to $BG_HOST." >&2
+        echo "The CI trust checks the id_token's aud, so set: audience: $BG_HOST" >&2
+        exit 2
+      fi
+
+      if [ -n "$BG_URL_INPUT" ]; then
+        BG_DEPLOY_URL="$BG_URL_INPUT"
+      fi
+      BG_VERSION="${BG_CLI_VERSION:-$BG_DEFAULT_VERSION}"
+
+      case "$(uname -m)" in
+        x86_64)        BG_PLATFORM=linux-amd64 ;;
+        aarch64|arm64) BG_PLATFORM=linux-arm64 ;;
+        *)
+          echo "No bg-deploy build for $(uname -m); this component runs on linux amd64 or arm64." >&2
+          exit 2
+          ;;
+      esac
+      BG_ARCHIVE="bg-deploy-${BG_PLATFORM}.tar.gz"
+
+      if ! command -v curl >/dev/null 2>&1; then
+        if command -v apk >/dev/null 2>&1; then
+          apk add --no-cache curl >/dev/null
+        elif command -v apt-get >/dev/null 2>&1; then
+          apt-get update >/dev/null && apt-get install -y --no-install-recommends curl >/dev/null
+        else
+          echo "No curl in $CI_JOB_IMAGE and no apk or apt-get to install it." >&2
+          exit 2
+        fi
+      fi
+
+      BG_WORK="$(mktemp -d)"
+      echo "Downloading bg-deploy $BG_VERSION ($BG_PLATFORM) from $BG_HOST"
+      curl -fsSL -o "$BG_WORK/$BG_ARCHIVE" "$BG_HOST/downloads/$BG_VERSION/$BG_ARCHIVE"
+
+      # A checksum served by the same host as the binary proves only that the
+      # download arrived intact: anyone able to serve a modified binary can
+      # serve a matching line beside it. Production is therefore verified
+      # against a hash committed to this file, which that host cannot rewrite.
+      # The test host republishes a version in place, so a committed hash there
+      # describes a build only until someone rebuilds it -- the choice is not
+      # "pinned or host-served" but "host-served or nothing", and a truncated
+      # archive is the failure that actually happens.
+      if [ "$BG_PINNED" = yes ]; then
+        BG_EXPECTED=''
+        case "$BG_VERSION/$BG_PLATFORM" in
+          2026.8.4/linux-amd64) BG_EXPECTED=4db567f9a40b6965722cbe431a67a83e129b68dd1cbfc7a4e247bf6264a27c56 ;;
+          2026.8.4/linux-arm64) BG_EXPECTED=585668505f54dbec29a3039070656b969257dd484bf1b2fafdeee4ec8c450068 ;;
+          2026.8.3/linux-amd64) BG_EXPECTED=c68fbc53c21d42eb7628d2dc6aaf65683033ada12e2ace15976d83e52c4645f9 ;;
+          2026.8.3/linux-arm64) BG_EXPECTED=abd3a018d81649ed2644d622e7389cdb86803d25c6c5d547f7028f80c4dc1770 ;;
+        esac
+        if [ -z "$BG_EXPECTED" ]; then
+          echo "No committed checksum for bg-deploy $BG_VERSION on $BG_PLATFORM." >&2
+          echo "Pin a version this component knows, or add the hash to templates/deploy.yml." >&2
+          exit 2
+        fi
+        echo "$BG_EXPECTED  $BG_ARCHIVE" > "$BG_WORK/SHA256"
+        echo "Verifying against the checksum committed in this component"
+      else
+        curl -fsSL -o "$BG_WORK/SHA256SUMS.txt" "$BG_HOST/downloads/$BG_VERSION/SHA256SUMS.txt"
+        grep "  $BG_ARCHIVE\$" "$BG_WORK/SHA256SUMS.txt" > "$BG_WORK/SHA256" || {
+          echo "$BG_ARCHIVE is not listed in the host's SHA256SUMS.txt." >&2
+          exit 1
+        }
+        echo "Verifying against the host's own SHA256SUMS.txt: integrity in transit, not provenance ($BG_ENV republishes builds)"
+      fi
+      (cd "$BG_WORK" && sha256sum -c SHA256)
+
+      tar xzf "$BG_WORK/$BG_ARCHIVE" -C "$BG_WORK" bg-deploy
+      chmod +x "$BG_WORK/bg-deploy"
+      "$BG_WORK/bg-deploy" --version
+
+      set -- -y --json --url "$BG_DEPLOY_URL"
+      if [ "$BG_CREATE_APP" = "true" ]; then set -- "$@" --create-app; fi
+      if [ "$BG_DELETE_APP" = "true" ]; then set -- "$@" --delete-app; fi
+      set -- "$@" --tag sha="$CI_COMMIT_SHA" \
+                  --tag pipeline="$CI_PIPELINE_ID" \
+                  --tag ref="$CI_COMMIT_REF_NAME"
+      if [ "$BG_DELETE_APP" != "true" ]; then
+        if [ -z "$BG_PATH" ]; then
+          echo "\`path\` is required unless delete-app is set." >&2
+          exit 2
+        fi
+        set -- "$@" "$BG_PATH"
+      fi
+
+      "$BG_WORK/bg-deploy" "$@" > bg-deploy.json
+      cat bg-deploy.json
+
+      # Exposed the way GitLab passes values between jobs, so a later job can
+      # comment the URL on a merge request without re-deriving it.
+      : > deploy.env
+      sed -n 's/.*"url"[[:space:]]*:[[:space:]]*"\([^"]*\)".*/BEHINDGATE_DEPLOYED_URL=\1/p' bg-deploy.json >> deploy.env
+      sed -n 's/.*"releaseId"[[:space:]]*:[[:space:]]*"\([^"]*\)".*/BEHINDGATE_RELEASE_ID=\1/p' bg-deploy.json >> deploy.env
+      cat deploy.env
+
+  artifacts:
+    reports:
+      dotenv: deploy.env
