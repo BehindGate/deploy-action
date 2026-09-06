@@ -14,7 +14,7 @@
  * server exchanges it. That is the only mode in which --create-app and
  * --delete-app work, and it needs no secret, so these run on forks.
  *
- * They skip on a CLI older than 2026.8.5, which has no preview flags at all.
+ * They skip on a CLI older than 2026.9.1, which has no preview flags at all.
  */
 
 const { test, describe, before, after } = require('node:test');
@@ -77,7 +77,7 @@ function runAction(inputs, env = {}) {
   });
 }
 
-describe('per-pull-request previews (CLI 2026.8.5)', () => {
+describe('per-pull-request previews (CLI 2026.9.1)', () => {
   test('create-app creates the app named by site-url, then deploys into it', async (t) => {
     if (skipReason) return t.skip(skipReason);
 

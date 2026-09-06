@@ -188,10 +188,9 @@ Without `create-app`, deploying to a path that has no app is an error rather tha
 a silent creation — a mistyped path cannot quietly become a new app nobody ever
 looks at.
 
-**Needs bg-deploy 2026.8.5**, which is where `--site-url`, `--create-app` and
-`--delete-app` arrived. The pinned default tracks the production download host
-and moves through [`cli-update.yml`](.github/workflows/cli-update.yml); on an
-older CLI these inputs fail with an unknown-flag error. See
+**Needs bg-deploy 2026.9.1**, which is where `--site-url`, `--create-app` and
+`--delete-app` arrived, and which the pinned default carries. Holding an older
+version through `cli-version` fails these inputs with an unknown-flag error. See
 [Which CLI version you get](#which-cli-version-you-get).
 
 ## How the CLI is verified
@@ -253,11 +252,10 @@ routinely will leave you on a client the server has moved past.
 **Minimum CLI version 2026.8.0.** This Action reads the CLI's `--json` output,
 which earlier releases do not have.
 
-**The preview inputs need 2026.8.5.** `site-url`, `create-app` and `delete-app`
+**The preview inputs need 2026.9.1.** `site-url`, `create-app` and `delete-app`
 are passed straight through to CLI flags that arrived in that release, so on an
-older CLI they fail as unknown flags. The pinned default follows the production
-download host, which at the time of writing serves 2026.8.4 — these inputs start
-working when the scheduled bump lands, with no change to your workflow.
+older CLI they fail as unknown flags. The pinned default carries them; only a
+`cli-version` holding an earlier release does not.
 
 Signing the releases would remove this machinery entirely — the Action could
 verify a signature at runtime and always take the current build. That is the
@@ -357,7 +355,7 @@ would otherwise produce a broken site from a green deploy.
 [`test/integration/preview.test.js`](test/integration/preview.test.js) covers the
 preview flow the same way, with a second local server standing in for the Actions
 token service so the CLI can authenticate as the job. It skips itself on a CLI
-older than 2026.8.5, detected from `--help` rather than from a version string.
+older than 2026.9.1, detected from `--help` rather than from a version string.
 
 To target a non-production environment:
 

@@ -223,30 +223,18 @@ pins that, against the same copy of semver the tool cache resolves.
 `node script/checksums.js verify` and the `checksums` CI job are unchanged: they
 describe production, which is the only thing `versions.json` claims to describe.
 
-## The preview inputs run ahead of the pinned CLI
+## The preview inputs
 
 `site-url`, `create-app` and `delete-app` map onto CLI flags added in
-**2026.8.5**, which at the time of writing is published on the test host only —
-production still serves 2026.8.4, and `/downloads/2026.8.5/` there answers 403.
-Nothing was pinned for it: adding a test-host-captured entry would put production
-users one `cli-version:` away from a 403, and `bump` never overwrites an existing
-entry, so a hand-added key would also stop the weekly job adopting the production
-build under the same name.
+**2026.9.1**, which is the pinned default. They fail as unknown flags on an
+earlier release held through `cli-version`. On `env: test` they follow whatever
+the host reports as current.
 
-So the inputs ship first and start working on production when
-[`cli-update.yml`](../.github/workflows/cli-update.yml) adopts 2026.8.5 there. No
-change to this Action is needed then. On `env: test` they work already, since
-that environment takes whatever version the host reports as current. Until the
-production pin lands:
-
-- `test/integration/preview.test.js` skips itself, detecting the flags from
-  `--help` rather than from a version string;
-- `BG_CLI_BINARY=/path/to/bg-deploy npm run test:integration` runs it against a
-  build fetched by hand. That escape hatch is test-only — the Action itself never
-  runs an unverified binary.
-
-Drop the skip only when it stops firing on its own; a skipping preview suite is
-the signal that the pin has not caught up yet.
+`test/integration/preview.test.js` detects the flags from `--help` rather than
+from a version string, so it skips itself rather than failing against a CLI that
+predates them. `BG_CLI_BINARY=/path/to/bg-deploy npm run test:integration` runs it
+against a build fetched by hand; that escape hatch is test-only, and the Action
+itself never runs an unverified binary.
 
 ## Hosts are per-environment
 

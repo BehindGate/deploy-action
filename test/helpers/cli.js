@@ -128,9 +128,9 @@ async function acquireRealCli() {
 /**
  * Whether the acquired CLI understands the preview flags.
  *
- * `--site-url`, `--create-app` and `--delete-app` arrived in 2026.8.5. An older
+ * `--site-url`, `--create-app` and `--delete-app` arrived in 2026.9.1. An older
  * CLI rejects them as unknown flags (exit 2), so the preview tests skip rather
- * than fail until the pinned default catches up. Read from `--help` rather than
+ * than fail on a held-back version. Read from `--help` rather than
  * from the version string: the flags are the contract, the number is a label.
  *
  * @returns {string|null} a skip reason, or null when the flags are supported
@@ -149,7 +149,7 @@ function previewSupport(binary) {
   const version = spawnSync(binary, ['--version'], { encoding: 'utf8' });
   return (
     `${`${version.stdout || ''}${version.stderr || ''}`.trim()} has no ` +
-    `${missing.join(', ')}; the preview flow needs 2026.8.5. Run against a ` +
+    `${missing.join(', ')}; the preview flow needs 2026.9.1. Run against a ` +
     `pre-release build with BG_CLI_BINARY=/path/to/bg-deploy.`
   );
 }
