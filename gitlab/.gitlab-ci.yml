@@ -1,0 +1,14 @@
+# Publishing a component to the CI/CD catalog means creating a release: the
+# catalog lists tags that have one, and `@<version>` in a consumer's `include`
+# resolves to it. Nothing else in this project needs a pipeline.
+
+create-release:
+  stage: deploy
+  image: registry.gitlab.com/gitlab-org/release-cli:latest
+  rules:
+    - if: $CI_COMMIT_TAG
+  script:
+    - echo "Publishing $CI_PROJECT_PATH@$CI_COMMIT_TAG to the CI/CD catalog"
+  release:
+    tag_name: $CI_COMMIT_TAG
+    description: Deploy to BehindGate $CI_COMMIT_TAG

@@ -350,8 +350,9 @@ an archive name that would not exist.
 
 ## Reusing this outside GitHub Actions
 
-Bitbucket Pipes and a GitLab component are planned, and the CLI is the shared
-core. Everything reusable lives in [`src/core/`](src/core/) — platform
+The GitLab component lives here too, in [`gitlab/`](gitlab/), and a Bitbucket
+Pipe is planned. The CLI is the shared core. Everything reusable lives in
+[`src/core/`](src/core/) — platform
 resolution, the version/checksum table, checksum verification, output parsing,
 exit-code mapping, the environment table, and the input rules that turn a set of
 inputs into a CLI invocation — with **no `@actions/*` imports** and no
@@ -361,6 +362,15 @@ the Actions toolkit.
 Neither this Action nor any future wrapper reimplements the deploy HTTP
 protocol. That lives in the CLI, so all three integrations stay thin and cannot
 drift apart.
+
+**The GitLab component is written here.** `gitlab/` holds the whole of the
+project published at [gitlab.com/behindgate/ci](https://gitlab.com/behindgate/ci),
+and [`gitlab-sync.yml`](.github/workflows/gitlab-sync.yml) pushes that directory
+there on every merge to `main`, so the project is a mirror rather than a second
+place to edit. A pinned CLI version or a new input therefore moves in one review
+instead of two that can disagree. Releasing to the CI/CD catalog stays a tag in
+the GitLab project; the sync never tags. See
+[`docs/MAINTAINERS.md`](docs/MAINTAINERS.md).
 
 ## Development
 

@@ -236,6 +236,35 @@ predates them. `BG_CLI_BINARY=/path/to/bg-deploy npm run test:integration` runs 
 against a build fetched by hand; that escape hatch is test-only, and the Action
 itself never runs an unverified binary.
 
+## The GitLab component
+
+`gitlab/` is the CI/CD component published at
+[gitlab.com/behindgate/ci](https://gitlab.com/behindgate/ci). It is a whole
+project, `.gitlab-ci.yml` and `LICENSE` included, and that GitLab project is a
+mirror: [`gitlab-sync.yml`](../.github/workflows/gitlab-sync.yml) runs
+[`script/gitlab-sync.sh`](../script/gitlab-sync.sh) on every merge to `main` that
+touches the directory, replacing the project's tree with this one. Anything
+committed there and not here is removed on the next sync.
+
+Both integrations wrap the same CLI, so a pinned version, a new input or a change
+in the CLI's contract is one review rather than two that drift. The component
+carries its own pinned checksums because it is a shell script with no access to
+`versions.json`; keep the two tables in step when `cli-update.yml` moves the pin.
+
+The sync needs **`GITLAB_SYNC_TOKEN`**, a GitLab token with write access to the
+project, as a repository secret. Without it the job fails on the first line
+rather than pushing a partial tree. To run it by hand:
+
+```bash
+GITLAB_TOKEN=<token> script/gitlab-sync.sh
+```
+
+It is idempotent: with nothing to change it says so and exits 0.
+
+Releases are not synced. Publishing to the catalog means creating a release from
+a tag in the GitLab project, which stays a deliberate act there, and a feature
+like a new input needs a new minor tag before anyone including `@2` sees it.
+
 ## Hosts are per-environment
 
 BehindGate serves downloads from a different host per environment — production
