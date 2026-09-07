@@ -215,10 +215,11 @@ history. One per line, as `name=value` or as a bare `name`:
 ```
 
 A name starts with a letter and holds letters, digits, dot, hyphen or
-underscore, and may appear once. A name with nothing after the `=` records the
-bare name, so an expression that resolves to nothing labels the release instead
-of failing the step. A teardown publishes no release, so `delete-app` ignores
-them and says so in the log.
+underscore, and may appear once. An empty line is not a tag, so an expression
+that resolves to nothing drops out. A name with nothing after the `=` is the same
+label as the bare name, so `run=${{ github.run_number }}` records `run` rather
+than failing the step when the number is unset. A teardown publishes no release,
+so `delete-app` ignores them and says so in the log.
 
 ## How the CLI is verified
 

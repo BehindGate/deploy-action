@@ -81,7 +81,8 @@ describe('per-pull-request previews (CLI 2026.9.1)', () => {
   test('trust names the CI trust the OIDC token is exchanged against', async (t) => {
     if (skipReason) return t.skip(skipReason);
 
-    const oidc = await startActionsOidcProvider();
+    const oidcToken = fakeJwt({ iss: 'https://token.actions.githubusercontent.com' });
+    const oidc = await startActionsOidcProvider({ token: oidcToken });
     const server = await startCaptureServer({
       releaseId: 'rel_preview_trust',
       apps: [{ appId: 'app_1', pathPrefix: '/preview/pr-42' }],
@@ -100,6 +101,10 @@ describe('per-pull-request previews (CLI 2026.9.1)', () => {
       assert.equal(code, 0, `CLI failed:\n${output}`);
       assert.equal(server.exchanges.length, 1);
       assert.equal(server.exchanges[0].trust_id, 'trust_01J8ZQ4M2N');
+      // The token the runner minted is the one exchanged, so this covers the
+      // credential path itself rather than only the trust that selects it.
+      assert.equal(oidc.requests.length, 1);
+      assert.equal(server.exchanges[0].subject_token, oidcToken);
     } finally {
       await server.close();
       await oidc.close();

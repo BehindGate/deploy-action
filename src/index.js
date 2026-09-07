@@ -210,6 +210,19 @@ function validatePath(inputPath) {
   return inputPath;
 }
 
+/**
+ * `core.summary` writes cell data into the table HTML verbatim, so a value that
+ * looks like markup renders as markup. Tag values are whatever the workflow put
+ * in them, which is the one thing here that is not drawn from a fixed set.
+ */
+function escapeHtml(value) {
+  return String(value)
+    .replace(/&/g, '&amp;')
+    .replace(/</g, '&lt;')
+    .replace(/>/g, '&gt;')
+    .replace(/"/g, '&quot;');
+}
+
 async function writeSummary({
   releaseId,
   url,
@@ -252,7 +265,11 @@ async function writeSummary({
     if (tags?.length) {
       rows.push([
         { data: 'Tags', header: true },
-        { data: tags.map((tag) => (tag.value ? `${tag.name}: ${tag.value}` : tag.name)).join(', ') },
+        {
+          data: tags
+            .map((tag) => (tag.value ? `${tag.name}: ${escapeHtml(tag.value)}` : tag.name))
+            .join(', '),
+        },
       ]);
     }
     rows.push([
