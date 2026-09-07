@@ -256,8 +256,12 @@ project, as a repository secret. Without it the job fails on the first line
 rather than pushing a partial tree. To run it by hand:
 
 ```bash
-GITLAB_TOKEN=<token> script/gitlab-sync.sh
+( read -rsp 'GitLab token: ' GITLAB_TOKEN; echo; export GITLAB_TOKEN
+  script/gitlab-sync.sh )
 ```
+
+The subshell keeps the token out of the shell history and out of the
+environment once the run is over.
 
 It is idempotent: with nothing to change it says so and exits 0.
 
