@@ -28624,14 +28624,69 @@ function looksLikeJwt(token) {
 }
 
 /**
+ * What the API accepts as a tag name, and what the CLI enforces before it zips
+ * anything. Kept in step with it so a malformed name is named as an input error
+ * here rather than reaching the runner as a bare exit 2.
+ */
+const TAG_NAME = /^[A-Za-z][A-Za-z0-9._-]*$/;
+
+/**
+ * Parse the `tags` input: one tag per line, `name=value` or a bare `name`.
+ *
+ * A line per tag rather than a separated list, because a value carries whatever
+ * a CI expression resolved to -- a commit subject, a branch name -- and any
+ * separator picked would eventually appear inside one.
+ *
+ * `name=` keeps the tag as a bare marker, so an unset build number labels the
+ * release instead of failing the deploy.
+ *
+ * @returns {{name: string, value: string, raw: string}[]}
+ */
+function parseTags(value) {
+  const tags = [];
+
+  for (const line of trim(value).split('\n')) {
+    const entry = line.trim();
+    if (!entry) continue;
+
+    const separator = entry.indexOf('=');
+    const name = (separator === -1 ? entry : entry.slice(0, separator)).trim();
+    const tagValue = separator === -1 ? '' : entry.slice(separator + 1).trim();
+
+    if (!name) {
+      throw new ConfigurationError(
+        `A tag needs a name: write "${entry}" as \`name=value\` or as a bare \`name\`.`
+      );
+    }
+    if (!TAG_NAME.test(name)) {
+      throw new ConfigurationError(
+        `The tag name "${name}" must start with a letter and use only letters, ` +
+          `digits, dot, hyphen or underscore.`
+      );
+    }
+    if (tags.some((tag) => tag.name.toLowerCase() === name.toLowerCase())) {
+      throw new ConfigurationError(
+        `The tag "${name}" is given more than once. A release holds one value ` +
+          `per name, so repeating one cannot express anything.`
+      );
+    }
+
+    tags.push({ name, value: tagValue, raw: tagValue ? `${name}=${tagValue}` : name });
+  }
+
+  return tags;
+}
+
+/**
  * Resolve the inputs into everything needed to run the CLI.
  *
  * @param {{env?: string, url?: string, downloadBaseUrl?: string, token?: string,
  *          path?: string, siteUrl?: string, createApp?: string|boolean,
- *          deleteApp?: string|boolean}} raw
+ *          deleteApp?: string|boolean, trust?: string, tags?: string}} raw
  * @returns {{environment: object, deployUrl: string, endpointSource: string,
  *           downloadBaseUrl: string, token: string, usesToken: boolean,
- *           siteUrl: string, createApp: boolean, deleteApp: boolean,
+ *           siteUrl: string, createApp: boolean, deleteApp: boolean, trust: string,
+ *           tags: {name: string, value: string, raw: string}[],
  *           deployPath: string, args: string[], warnings: string[]}}
  */
 function resolveInputs(raw = {}) {
@@ -28644,6 +28699,8 @@ function resolveInputs(raw = {}) {
   const deployPath = trim(raw.path);
   const createApp = parseBoolean('create-app', raw.createApp);
   const deleteApp = parseBoolean('delete-app', raw.deleteApp);
+  const trust = trim(raw.trust);
+  const tags = parseTags(raw.tags);
 
   const warnings = [];
 
@@ -28671,6 +28728,21 @@ function resolveInputs(raw = {}) {
           'target per run (which is what a per-pull-request preview needs): drop ' +
           '`token`, grant `permissions: id-token: write`, and let the job ' +
           'authenticate as itself.',
+      ].join('\n')
+    );
+  }
+
+  if (token && trust) {
+    throw new ConfigurationError(
+      [
+        'Pass either `token` or `trust`, not both.',
+        '',
+        'A CI trust is what a job authenticating as itself exchanges its OIDC ' +
+          'token against. With `token` set there is no exchange, so the CLI ' +
+          'would ignore `trust` and deploy wherever the token says.',
+        '',
+        'Drop `trust` to keep deploying with the token, or drop `token` and ' +
+          'grant `permissions: id-token: write` to authenticate as the job.',
       ].join('\n')
     );
   }
@@ -28742,11 +28814,20 @@ function resolveInputs(raw = {}) {
     );
   }
 
+  if (deleteApp && tags.length) {
+    warnings.push(
+      'Both `delete-app` and `tags` are set. A teardown publishes no release ' +
+        'for a tag to land on, so `tags` is ignored.'
+    );
+  }
+
   const args = ['-y', '--json', '--url', deployUrl];
 
+  if (trust) args.push('--trust', trust);
   if (siteUrl) args.push('--site-url', siteUrl);
   if (createApp) args.push('--create-app');
   if (deleteApp) args.push('--delete-app');
+  if (!deleteApp) for (const tag of tags) args.push('--tag', tag.raw);
   // The CLI takes the path last, and takes none at all for a teardown.
   if (!deleteApp) args.push(deployPath);
 
@@ -28760,6 +28841,8 @@ function resolveInputs(raw = {}) {
     siteUrl,
     createApp,
     deleteApp,
+    trust,
+    tags: deleteApp ? [] : tags,
     deployPath: deleteApp ? '' : deployPath,
     args,
     warnings,
@@ -28769,6 +28852,7 @@ function resolveInputs(raw = {}) {
 module.exports = {
   ConfigurationError,
   parseBoolean,
+  parseTags,
   looksLikeJwt,
   resolveInputs,
 };
@@ -29652,6 +29736,7 @@ async function writeSummary({
   endpointSource,
   deployPath,
   siteUrl,
+  tags,
   version,
   verifiedAgainst,
   deleteApp,
@@ -29682,6 +29767,12 @@ async function writeSummary({
     }
     if (siteUrl) {
       rows.push([{ data: 'Target', header: true }, { data: siteUrl }]);
+    }
+    if (tags?.length) {
+      rows.push([
+        { data: 'Tags', header: true },
+        { data: tags.map((tag) => (tag.value ? `${tag.name}: ${tag.value}` : tag.name)).join(', ') },
+      ]);
     }
     rows.push([
       { data: 'CLI', header: true },
@@ -29735,6 +29826,8 @@ async function run() {
     siteUrl: core.getInput('site-url'),
     createApp: core.getInput('create-app'),
     deleteApp: core.getInput('delete-app'),
+    trust: core.getInput('trust'),
+    tags: core.getInput('tags'),
   });
 
   const { args, deployPath, deployUrl, endpointSource, siteUrl, usesToken } = inputs;
@@ -29858,6 +29951,7 @@ async function run() {
     endpointSource,
     deployPath,
     siteUrl,
+    tags: inputs.tags,
     version: parsed?.version || cli.version,
     verifiedAgainst: cli.verifiedAgainst,
     deleteApp: inputs.deleteApp,

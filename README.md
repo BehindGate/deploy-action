@@ -48,6 +48,8 @@ the site, so that `index.html` sits at the top of it.
 | `site-url` | no | — | What to deploy to, as the URL it serves on: the host names the site, the path names the app. Only with the CI-job credential; cannot be combined with `token`. |
 | `create-app` | no | `false` | Create the app named by `site-url` if it does not exist yet. |
 | `delete-app` | no | `false` | Delete the app named by `site-url` and exit without deploying. |
+| `trust` | no | — | The CI trust to exchange the job's OIDC token against, where more than one covers this pipeline. Only with the CI-job credential. |
+| `tags` | no | — | Labels to record on the release, one per line, as `name=value` or a bare `name`. |
 | `url` | no | `https://app.behindgate.com/api/deploy/releases` | Pin the deploy endpoint to an exact URL. For a local or dev endpoint — see [Why the endpoint is pinned](#why-the-endpoint-is-pinned). |
 | `cli-version` | no | `defaultVersion` from [`versions.json`](versions.json) | Escape hatch to hold a specific `bg-deploy` version after a bad release. Normally leave unset — see [Which CLI version you get](#which-cli-version-you-get). |
 | `download-base-url` | no | `https://app.behindgate.com` | Host to download the CLI from. |
@@ -116,6 +118,9 @@ That needs three things:
 
 The endpoint comes from the default, or from `url` where you set one; there is no
 token to carry one in this mode.
+
+Where more than one CI trust in the workspace covers the pipeline, `trust` names
+the one to exchange against. With a single trust, leave it unset.
 
 It is also the **only** mode in which `create-app` and `delete-app` work, because
 a deploy token is pinned to one app that already exists: it can neither create
@@ -192,6 +197,28 @@ looks at.
 `--delete-app` arrived, and which the pinned default carries. Holding an older
 version through `cli-version` fails these inputs with an unknown-flag error. See
 [Which CLI version you get](#which-cli-version-you-get).
+
+## Labelling a release
+
+`tags` records labels on the release, which the workspace shows in its deploy
+history. One per line, as `name=value` or as a bare `name`:
+
+```yaml
+      - uses: behindgate/deploy-action@v1
+        with:
+          path: dist
+          token: ${{ secrets.BEHINDGATE_TOKEN }}
+          tags: |
+            sha=${{ github.sha }}
+            run=${{ github.run_number }}
+            ${{ github.event_name == 'schedule' && 'nightly' || '' }}
+```
+
+A name starts with a letter and holds letters, digits, dot, hyphen or
+underscore, and may appear once. A name with nothing after the `=` records the
+bare name, so an expression that resolves to nothing labels the release instead
+of failing the step. A teardown publishes no release, so `delete-app` ignores
+them and says so in the log.
 
 ## How the CLI is verified
 

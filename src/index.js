@@ -217,6 +217,7 @@ async function writeSummary({
   endpointSource,
   deployPath,
   siteUrl,
+  tags,
   version,
   verifiedAgainst,
   deleteApp,
@@ -247,6 +248,12 @@ async function writeSummary({
     }
     if (siteUrl) {
       rows.push([{ data: 'Target', header: true }, { data: siteUrl }]);
+    }
+    if (tags?.length) {
+      rows.push([
+        { data: 'Tags', header: true },
+        { data: tags.map((tag) => (tag.value ? `${tag.name}: ${tag.value}` : tag.name)).join(', ') },
+      ]);
     }
     rows.push([
       { data: 'CLI', header: true },
@@ -300,6 +307,8 @@ async function run() {
     siteUrl: core.getInput('site-url'),
     createApp: core.getInput('create-app'),
     deleteApp: core.getInput('delete-app'),
+    trust: core.getInput('trust'),
+    tags: core.getInput('tags'),
   });
 
   const { args, deployPath, deployUrl, endpointSource, siteUrl, usesToken } = inputs;
@@ -423,6 +432,7 @@ async function run() {
     endpointSource,
     deployPath,
     siteUrl,
+    tags: inputs.tags,
     version: parsed?.version || cli.version,
     verifiedAgainst: cli.verifiedAgainst,
     deleteApp: inputs.deleteApp,

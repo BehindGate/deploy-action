@@ -78,6 +78,34 @@ function runAction(inputs, env = {}) {
 }
 
 describe('per-pull-request previews (CLI 2026.9.1)', () => {
+  test('trust names the CI trust the OIDC token is exchanged against', async (t) => {
+    if (skipReason) return t.skip(skipReason);
+
+    const oidc = await startActionsOidcProvider();
+    const server = await startCaptureServer({
+      releaseId: 'rel_preview_trust',
+      apps: [{ appId: 'app_1', pathPrefix: '/preview/pr-42' }],
+    });
+    try {
+      const { code, output } = await runAction(
+        {
+          path: fixture.site,
+          url: server.url,
+          siteUrl: SITE_URL,
+          trust: 'trust_01J8ZQ4M2N',
+        },
+        oidc.env()
+      );
+
+      assert.equal(code, 0, `CLI failed:\n${output}`);
+      assert.equal(server.exchanges.length, 1);
+      assert.equal(server.exchanges[0].trust_id, 'trust_01J8ZQ4M2N');
+    } finally {
+      await server.close();
+      await oidc.close();
+    }
+  });
+
   test('create-app creates the app named by site-url, then deploys into it', async (t) => {
     if (skipReason) return t.skip(skipReason);
 

@@ -24,6 +24,7 @@ const { startCaptureServer, fakeJwt } = require('../helpers/capture-server');
 const { acquireRealCli, makeSiteFixture } = require('../helpers/cli');
 const { listZipEntries } = require('../helpers/zip');
 const { parseDeployJson } = require('../../src/core/parse');
+const { resolveInputs } = require('../../src/core/inputs');
 const { EXIT_CONFIG } = require('../../src/core/errors');
 
 let cli = null;
@@ -64,6 +65,38 @@ function runCli(args, env = {}) {
 }
 
 describe('bg-deploy against a local capture server', () => {
+  test('tags reach the release the Action creates', async (t) => {
+    if (skipReason) return t.skip(skipReason);
+
+    const server = await startCaptureServer();
+    try {
+      const { args } = resolveInputs({
+        path: fixture.site,
+        token: fakeJwt(),
+        url: server.url,
+        tags: 'sha=abc123\nnightly',
+      });
+      const { code, output } = await runCli(args, { BEHINDGATE_TOKEN: fakeJwt() });
+
+      assert.equal(code, 0, `CLI failed:\n${output}`);
+
+      const create = server.requests.find(
+        (request) =>
+          request.method === 'POST' &&
+          !request.path.endsWith('/publish') &&
+          !request.path.startsWith('/upload/')
+      );
+      // A bare name carries no value on the wire, which is what makes an unset
+      // CI expression a marker rather than an empty label.
+      assert.deepEqual(JSON.parse(create.bodyText).tags, [
+        { name: 'sha', value: 'abc123' },
+        { name: 'nightly' },
+      ]);
+    } finally {
+      await server.close();
+    }
+  });
+
   test('uploads a zip with index.html at the ROOT, not nested under the folder name', async (t) => {
     if (skipReason) return t.skip(skipReason);
 

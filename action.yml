@@ -130,6 +130,38 @@ inputs:
     required: false
     default: 'false'
 
+  trust:
+    description: |
+      The CI trust to exchange the job's OIDC token against, when more than one
+      in the workspace covers this pipeline.
+
+      Leave it unset with a single trust: the workspace resolves the run to the
+      one that covers it. Only for the CI-job credential, since a deploy token
+      carries its own authority; passing both `token` and `trust` is a
+      configuration error.
+    required: false
+    default: ''
+
+  tags:
+    description: |
+      Labels to record on the release, one per line, as `name=value` or as a
+      bare `name`. They are shown in the workspace's deploy history.
+
+      Example:
+
+        tags: |
+          sha=${{ github.sha }}
+          run=${{ github.run_number }}
+
+      A name starts with a letter and holds letters, digits, dot, hyphen or
+      underscore, and may appear once. `name=` with nothing after it records the
+      bare name, so a CI expression that resolves to nothing labels the release
+      rather than failing the step.
+
+      A teardown (`delete-app`) publishes no release, so tags are ignored there.
+    required: false
+    default: ''
+
   cli-version:
     description: |
       Escape hatch for holding a specific bg-deploy version. Normally leave
