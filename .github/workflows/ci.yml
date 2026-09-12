@@ -56,7 +56,10 @@ jobs:
             while IFS= read -r -d '' _status && IFS= read -r -d '' old && IFS= read -r -d '' new; do
               case "$new" in */*) parent="${new%/*}";; *) parent=.;; esac
               mkdir -p -- "$base_tree/$parent"
-              git -C "$base_tree" mv -- "$old" "$new"
+              # A directory standing at the destination would swallow the move.
+              rm -rf -- "$base_tree/$new"
+              git -C "$base_tree" rm -rq --cached --ignore-unmatch -- "$new"
+              git -C "$base_tree" mv -f -- "$old" "$new"
             done
           if ! git -C "$base_tree" diff --cached --quiet; then
             git -C "$base_tree" -c user.email=ci@behindgate.invalid -c user.name=ci commit -qm "rename baseline"
