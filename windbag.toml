@@ -1,0 +1,10 @@
+[windbag]
+# dist/ is the ncc bundle of src/ and its dependencies, committed because the
+# Action runs it directly. Its comments come from upstream packages.
+exclude = ["dist/**"]
+
+[windbag.ticket_id]
+# Work here is tracked by GitHub issue and pull request numbers, not by a
+# tracker prefix, so the generic pattern only matches standard names such as
+# ECMA-262.
+enabled = false

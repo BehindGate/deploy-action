@@ -18,12 +18,41 @@ jobs:
     runs-on: ubuntu-latest
     steps:
       - uses: actions/checkout@v4
+        with:
+          # Full history so the comment lint below can reach the pull request's
+          # base commit.
+          fetch-depth: 0
       - uses: actions/setup-node@v4
         with:
           node-version-file: .node-version
           cache: npm
       - run: npm ci
       - run: npm run lint
+      - uses: actions/setup-python@v5
+        if: ${{ github.event_name == 'pull_request' }}
+        with:
+          python-version: "3.12"
+      # Hard gate on windbag's error rules (ticket IDs, change narration, hedging)
+      # for comments this pull request adds. The check runs in a worktree at the
+      # base commit with the changed files copied over it, so windbag sees the
+      # diff as uncommitted work and judges only those lines.
+      - name: Comment lint (windbag)
+        if: ${{ github.event_name == 'pull_request' }}
+        env:
+          BASE_SHA: ${{ github.event.pull_request.base.sha }}
+        run: |
+          set -euo pipefail
+          python -m pip install --quiet --only-binary=:all: windbag==0.1.1
+          mapfile -t files < <(git diff --name-only --diff-filter=ACMR "$BASE_SHA" HEAD)
+          if [ "${#files[@]}" -eq 0 ]; then exit 0; fi
+          base_tree="$RUNNER_TEMP/windbag-base"
+          git worktree add --detach --quiet "$base_tree" "$BASE_SHA"
+          for f in "${files[@]}"; do
+            mkdir -p "$base_tree/$(dirname "$f")"
+            cp "$f" "$base_tree/$f"
+          done
+          cd "$base_tree"
+          windbag check --config "$GITHUB_WORKSPACE/windbag.toml" --new-only "${files[@]}"
 
   test:
     name: Test (${{ matrix.os }})
