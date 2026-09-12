@@ -45,12 +45,25 @@ jobs:
           if [ "${#files[@]}" -eq 0 ]; then exit 0; fi
           base_tree="$RUNNER_TEMP/windbag-base"
           git worktree add --detach --quiet "$base_tree" "$BASE_SHA"
+          # What the pull request deleted can stand where it now wants a file
+          # or a directory.
+          git diff -z --name-only --diff-filter=D "$BASE_SHA" HEAD |
+            while IFS= read -r -d '' gone; do
+              rm -rf -- "$base_tree/$gone"
+            done
           # Without the rename applied, the whole destination file reads as added.
+          rename_tmp="$(mktemp -d "$RUNNER_TEMP/windbag-rename.XXXXXX")"
           git diff -z --name-status --diff-filter=R "$BASE_SHA" HEAD |
             while IFS= read -r -d '' _status && IFS= read -r -d '' old && IFS= read -r -d '' new; do
               case "$new" in */*) parent="${new%/*}";; *) parent=.;; esac
+              # The destination can be the source's own parent, so hold the
+              # source aside before clearing the path it moves to.
+              mv -- "$base_tree/$old" "$rename_tmp/blob"
+              rm -rf -- "$base_tree/$new"
+              git -C "$base_tree" rm -rq --cached --ignore-unmatch -- "$old" "$new"
               mkdir -p -- "$base_tree/$parent"
-              git -C "$base_tree" mv -- "$old" "$new"
+              mv -- "$rename_tmp/blob" "$base_tree/$new"
+              git -C "$base_tree" add -- "$new"
             done
           if ! git -C "$base_tree" diff --cached --quiet; then
             git -C "$base_tree" -c user.email=ci@behindgate.invalid -c user.name=ci commit -qm "rename baseline"
@@ -58,8 +71,8 @@ jobs:
           for f in "${files[@]}"; do
             case "$f" in */*) parent="${f%/*}";; *) parent=.;; esac
             mkdir -p -- "$base_tree/$parent"
-            # A symlink left by the baseline would otherwise take the copy.
-            rm -f -- "$base_tree/$f"
+            # A symlink or directory left by the baseline would take the copy.
+            rm -rf -- "$base_tree/$f"
             cp -P -- "$f" "$base_tree/$f"
           done
           cd "$base_tree"
