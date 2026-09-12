@@ -1,0 +1,7 @@
+[windbag]
+# The committed ncc bundle, whose comments come from the packaged dependencies.
+exclude = ["dist/**"]
+
+[windbag.ticket_id]
+# No tracker prefix is in use here, so the pattern only matches standard names.
+enabled = false
