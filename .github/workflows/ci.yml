@@ -32,10 +32,8 @@ jobs:
         if: ${{ github.event_name == 'pull_request' }}
         with:
           python-version: "3.12"
-      # Hard gate on windbag's error rules (ticket IDs, change narration, hedging)
-      # for comments this pull request adds. The check runs in a worktree at the
-      # base commit with the changed files copied over it, so windbag sees the
-      # diff as uncommitted work and judges only those lines.
+      # Judging only the lines this pull request adds needs a worktree at the base
+      # commit, with the pull request's versions of the changed files copied in.
       - name: Comment lint (windbag)
         if: ${{ github.event_name == 'pull_request' }}
         env:
@@ -47,6 +45,15 @@ jobs:
           if [ "${#files[@]}" -eq 0 ]; then exit 0; fi
           base_tree="$RUNNER_TEMP/windbag-base"
           git worktree add --detach --quiet "$base_tree" "$BASE_SHA"
+          # Without the rename applied, the whole destination file reads as added.
+          git diff -z --name-status --diff-filter=R "$BASE_SHA" HEAD |
+            while IFS= read -r -d '' _status && IFS= read -r -d '' old && IFS= read -r -d '' new; do
+              mkdir -p "$base_tree/$(dirname "$new")"
+              git -C "$base_tree" mv -- "$old" "$new"
+            done
+          if ! git -C "$base_tree" diff --cached --quiet; then
+            git -C "$base_tree" -c user.email=ci@behindgate.invalid -c user.name=ci commit -qm "rename baseline"
+          fi
           for f in "${files[@]}"; do
             mkdir -p "$base_tree/$(dirname "$f")"
             cp "$f" "$base_tree/$f"
