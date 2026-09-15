@@ -189,9 +189,9 @@ a silent creation — a mistyped path cannot quietly become a new app nobody eve
 looks at.
 
 **Needs bg-deploy 2026.8.5**, which is where `--site-url`, `--create-app` and
-`--delete-app` arrived. The pinned default tracks the production download host
-and moves through [`cli-update.yml`](.github/workflows/cli-update.yml); on an
-older CLI these inputs fail with an unknown-flag error. See
+`--delete-app` arrived. The pinned default is past that, so they work without
+pinning anything; on an older CLI selected through `cli-version` they fail with
+an unknown-flag error. See
 [Which CLI version you get](#which-cli-version-you-get).
 
 ## How the CLI is verified
@@ -256,8 +256,8 @@ which earlier releases do not have.
 **The preview inputs need 2026.8.5.** `site-url`, `create-app` and `delete-app`
 are passed straight through to CLI flags that arrived in that release, so on an
 older CLI they fail as unknown flags. The pinned default follows the production
-download host, which at the time of writing serves 2026.8.4 — these inputs start
-working when the scheduled bump lands, with no change to your workflow.
+download host and is past that release, so they work unless `cli-version` holds
+you on something older.
 
 Signing the releases would remove this machinery entirely — the Action could
 verify a signature at runtime and always take the current build. That is the
