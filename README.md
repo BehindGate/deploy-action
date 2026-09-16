@@ -194,8 +194,9 @@ a silent creation — a mistyped path cannot quietly become a new app nobody eve
 looks at.
 
 **Needs bg-deploy 2026.9.1**, which is where `--site-url`, `--create-app` and
-`--delete-app` arrived, and which the pinned default carries. Holding an older
-version through `cli-version` fails these inputs with an unknown-flag error. See
+`--delete-app` arrived. The pinned default is that release, so they work without
+pinning anything; on an older CLI selected through `cli-version` they fail with
+an unknown-flag error. See
 [Which CLI version you get](#which-cli-version-you-get).
 
 ## Labelling a release
@@ -282,8 +283,9 @@ which earlier releases do not have.
 
 **The preview inputs need 2026.9.1.** `site-url`, `create-app` and `delete-app`
 are passed straight through to CLI flags that arrived in that release, so on an
-older CLI they fail as unknown flags. The pinned default carries them; only a
-`cli-version` holding an earlier release does not.
+older CLI they fail as unknown flags. The pinned default follows the production
+download host and carries them, so they work unless `cli-version` holds you on
+something older.
 
 Signing the releases would remove this machinery entirely — the Action could
 verify a signature at runtime and always take the current build. That is the
