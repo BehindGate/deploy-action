@@ -147,9 +147,9 @@ jobs:
       - uses: actions/setup-node@v4
         with:
           node-version-file: .node-version
-          cache: npm
-      - run: npm ci
 
+      # The bundle is committed and the helpers this job runs import nothing
+      # but node builtins, so there is no install step to need dependencies.
       - name: Start the capture server
         env:
           CAPTURE_REQUESTS: ${{ runner.temp }}/capture-requests.json
