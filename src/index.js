@@ -210,6 +210,19 @@ function validatePath(inputPath) {
   return inputPath;
 }
 
+/**
+ * `core.summary` writes cell data into the table HTML verbatim, so a value that
+ * looks like markup renders as markup. Tag values are whatever the workflow put
+ * in them, which is the one thing here that is not drawn from a fixed set.
+ */
+function escapeHtml(value) {
+  return String(value)
+    .replace(/&/g, '&amp;')
+    .replace(/</g, '&lt;')
+    .replace(/>/g, '&gt;')
+    .replace(/"/g, '&quot;');
+}
+
 async function writeSummary({
   releaseId,
   url,
@@ -217,6 +230,7 @@ async function writeSummary({
   endpointSource,
   deployPath,
   siteUrl,
+  tags,
   version,
   verifiedAgainst,
   deleteApp,
@@ -247,6 +261,16 @@ async function writeSummary({
     }
     if (siteUrl) {
       rows.push([{ data: 'Target', header: true }, { data: siteUrl }]);
+    }
+    if (tags?.length) {
+      rows.push([
+        { data: 'Tags', header: true },
+        {
+          data: tags
+            .map((tag) => (tag.value ? `${tag.name}: ${escapeHtml(tag.value)}` : tag.name))
+            .join(', '),
+        },
+      ]);
     }
     rows.push([
       { data: 'CLI', header: true },
@@ -300,6 +324,8 @@ async function run() {
     siteUrl: core.getInput('site-url'),
     createApp: core.getInput('create-app'),
     deleteApp: core.getInput('delete-app'),
+    trust: core.getInput('trust'),
+    tags: core.getInput('tags'),
   });
 
   const { args, deployPath, deployUrl, endpointSource, siteUrl, usesToken } = inputs;
@@ -423,6 +449,7 @@ async function run() {
     endpointSource,
     deployPath,
     siteUrl,
+    tags: inputs.tags,
     version: parsed?.version || cli.version,
     verifiedAgainst: cli.verifiedAgainst,
     deleteApp: inputs.deleteApp,

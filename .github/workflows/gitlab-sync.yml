@@ -1,0 +1,39 @@
+name: GitLab sync
+
+# gitlab/ is the source of the CI/CD component published at gitlab.com/behindgate/ci,
+# and that project is a mirror of it. This pushes the directory there once a change
+# has merged, so the two integrations cannot drift while both wrap the same CLI.
+#
+# Needs GITLAB_SYNC_TOKEN: a GitLab token with write access to the project.
+
+on:
+  push:
+    branches: [main]
+    paths:
+      - 'gitlab/**'
+      - 'script/gitlab-sync.sh'
+      - '.github/workflows/gitlab-sync.yml'
+  workflow_dispatch:
+
+permissions:
+  contents: read
+
+concurrency:
+  group: gitlab-sync
+  cancel-in-progress: false
+
+jobs:
+  sync:
+    name: Push gitlab/ to the component project
+    runs-on: ubuntu-latest
+    steps:
+      # The job holds a GitLab token, and the checkout's own credential has no
+      # part in the push, so it is not left in .git/config for the sync to reach.
+      - uses: actions/checkout@v4
+        with:
+          persist-credentials: false
+
+      - name: Sync
+        env:
+          GITLAB_TOKEN: ${{ secrets.GITLAB_SYNC_TOKEN }}
+        run: script/gitlab-sync.sh

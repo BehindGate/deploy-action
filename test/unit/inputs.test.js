@@ -3,7 +3,12 @@
 const { test, describe } = require('node:test');
 const assert = require('node:assert/strict');
 
-const { resolveInputs, parseBoolean, ConfigurationError } = require('../../src/core/inputs');
+const {
+  resolveInputs,
+  parseBoolean,
+  parseTags,
+  ConfigurationError,
+} = require('../../src/core/inputs');
 const {
   resolveEnvironment,
   knownEnvironments,
@@ -377,5 +382,78 @@ describe('parseBoolean', () => {
     for (const value of ['yes', 'no', '1', '0', 'on']) {
       assert.throws(() => parseBoolean('delete-app', value), ConfigurationError, value);
     }
+  });
+});
+
+describe('tags', () => {
+  test('one per line, as name=value or a bare name', () => {
+    const resolved = inputs({ tags: 'sha=abc123\nnightly\n' });
+    assert.deepEqual(resolved.tags, [
+      { name: 'sha', value: 'abc123', raw: 'sha=abc123' },
+      { name: 'nightly', value: '', raw: 'nightly' },
+    ]);
+    assert.deepEqual(resolved.args.slice(-3), ['--tag', 'nightly', 'dist']);
+  });
+
+  test('a value keeps everything after the first =', () => {
+    const [tag] = parseTags('subject=fix: keep a=b in the message');
+    assert.equal(tag.value, 'fix: keep a=b in the message');
+  });
+
+  test('a name with nothing after the = stays a bare marker', () => {
+    // A CI expression that resolves to nothing (an unset build number) labels
+    // the release rather than failing the step.
+    assert.deepEqual(parseTags('build='), [{ name: 'build', value: '', raw: 'build' }]);
+  });
+
+  test('blank lines and surrounding space are not tags', () => {
+    assert.deepEqual(parseTags('\n  sha = abc  \n\n'), [
+      { name: 'sha', value: 'abc', raw: 'sha=abc' },
+    ]);
+    assert.deepEqual(parseTags(''), []);
+    assert.deepEqual(parseTags(undefined), []);
+  });
+
+  test('a name the API would reject is an input error, not a failed deploy', () => {
+    for (const value of ['1sha=abc', '=abc', 'a b=c', 'sha/1=abc']) {
+      assert.throws(() => parseTags(value), ConfigurationError, value);
+    }
+  });
+
+  test('a repeated name is refused, whatever its case', () => {
+    assert.throws(() => parseTags('sha=abc\nSHA=def'), /given more than once/);
+  });
+
+  test('a teardown drops them, with a warning', () => {
+    const resolved = resolveInputs({
+      deleteApp: 'true',
+      siteUrl: 'https://docs.example.com/preview/pr-1',
+      tags: 'sha=abc123',
+    });
+    assert.deepEqual(resolved.tags, []);
+    assert.ok(!resolved.args.includes('--tag'));
+    assert.ok(resolved.warnings.some((warning) => warning.includes('`tags` is ignored')));
+  });
+});
+
+describe('trust', () => {
+  test('is passed through as --trust', () => {
+    const resolved = resolveInputs({
+      path: 'dist',
+      trust: 'trust_01J8',
+      siteUrl: 'https://docs.example.com/preview/pr-1',
+    });
+    assert.equal(resolved.trust, 'trust_01J8');
+    assert.deepEqual(resolved.args.slice(4, 6), ['--trust', 'trust_01J8']);
+  });
+
+  test('cannot be combined with a token', () => {
+    // The CLI ignores it there, so the deploy would go wherever the token says
+    // while the workflow reads as if the trust selected the target.
+    assert.throws(() => inputs({ trust: 'trust_01J8' }), /`token` or `trust`, not both/);
+  });
+
+  test('is absent from the command line when unset', () => {
+    assert.ok(!inputs().args.includes('--trust'));
   });
 });

@@ -11,10 +11,10 @@
  * Observed protocol (bg-deploy 2026.07.1):
  *   POST <url>            -> 201 {releaseId, uploadUrl, uploadMethod, expiresAt, url}
  *   PUT  <uploadUrl>      -> the zip, Content-Type: application/zip
- *   GET  <url>/<releaseId> -> polled until status is no longer "extracting"
+ *   GET  <url>/<releaseId> -> polled until status leaves "extracting"
  *   POST <url>/publish    -> {"releaseId": "..."}
  *
- * Added in 2026.8.5, for a job that authenticates as itself rather than with a
+ * Added in 2026.9.1, for a job that authenticates as itself rather than with a
  * deploy token (`--site-url`, `--create-app`, `--delete-app`):
  *   POST   <url>/oidc/token -> form-encoded RFC 8693 exchange of the runner's
  *                              OIDC token; answers {access_token, ...}

@@ -4,17 +4,17 @@
  * Integration tests for the per-pull-request preview flow, against the REAL
  * bg-deploy binary and with no real credentials.
  *
- * These cover what unit tests over `src/core/inputs.js` cannot: that the flags
- * the Action builds are the flags the CLI accepts, and that they reach the
- * deploy API as the calls a preview actually needs -- an app created on the way
- * up, and deleted on the way down.
+ * These cover what the unit tests cannot: that the flags the Action builds are
+ * the flags the CLI accepts, and that they reach the deploy API as the calls a
+ * preview actually needs -- an app created on the way up, and deleted on the
+ * way down.
  *
  * The credential here is the job itself rather than a deploy token: a local
  * stand-in for the Actions token service mints an OIDC token, and the capture
  * server exchanges it. That is the only mode in which --create-app and
  * --delete-app work, and it needs no secret, so these run on forks.
  *
- * They skip on a CLI older than 2026.8.5, which has no preview flags at all.
+ * They skip on a CLI older than 2026.9.1, which has no preview flags at all.
  */
 
 const { test, describe, before, after } = require('node:test');
@@ -77,7 +77,40 @@ function runAction(inputs, env = {}) {
   });
 }
 
-describe('per-pull-request previews (CLI 2026.8.5)', () => {
+describe('per-pull-request previews (CLI 2026.9.1)', () => {
+  test('trust names the CI trust the OIDC token is exchanged against', async (t) => {
+    if (skipReason) return t.skip(skipReason);
+
+    const oidcToken = fakeJwt({ iss: 'https://token.actions.githubusercontent.com' });
+    const oidc = await startActionsOidcProvider({ token: oidcToken });
+    const server = await startCaptureServer({
+      releaseId: 'rel_preview_trust',
+      apps: [{ appId: 'app_1', pathPrefix: '/preview/pr-42' }],
+    });
+    try {
+      const { code, output } = await runAction(
+        {
+          path: fixture.site,
+          url: server.url,
+          siteUrl: SITE_URL,
+          trust: 'trust_01J8ZQ4M2N',
+        },
+        oidc.env()
+      );
+
+      assert.equal(code, 0, `CLI failed:\n${output}`);
+      assert.equal(server.exchanges.length, 1);
+      assert.equal(server.exchanges[0].trust_id, 'trust_01J8ZQ4M2N');
+      // The token the runner minted is the one exchanged, so this covers the
+      // credential path itself rather than only the trust that selects it.
+      assert.equal(oidc.requests.length, 1);
+      assert.equal(server.exchanges[0].subject_token, oidcToken);
+    } finally {
+      await server.close();
+      await oidc.close();
+    }
+  });
+
   test('create-app creates the app named by site-url, then deploys into it', async (t) => {
     if (skipReason) return t.skip(skipReason);
 

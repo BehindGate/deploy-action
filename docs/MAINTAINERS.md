@@ -223,30 +223,51 @@ pins that, against the same copy of semver the tool cache resolves.
 `node script/checksums.js verify` and the `checksums` CI job are unchanged: they
 describe production, which is the only thing `versions.json` claims to describe.
 
-## The preview inputs run ahead of the pinned CLI
+## The preview inputs
 
 `site-url`, `create-app` and `delete-app` map onto CLI flags added in
-**2026.8.5**, which at the time of writing is published on the test host only —
-production still serves 2026.8.4, and `/downloads/2026.8.5/` there answers 403.
-Nothing was pinned for it: adding a test-host-captured entry would put production
-users one `cli-version:` away from a 403, and `bump` never overwrites an existing
-entry, so a hand-added key would also stop the weekly job adopting the production
-build under the same name.
+**2026.9.1**, which is the pinned default. They fail as unknown flags on an
+earlier release held through `cli-version`. On `env: test` they follow whatever
+the host reports as current.
 
-So the inputs ship first and start working on production when
-[`cli-update.yml`](../.github/workflows/cli-update.yml) adopts 2026.8.5 there. No
-change to this Action is needed then. On `env: test` they work already, since
-that environment takes whatever version the host reports as current. Until the
-production pin lands:
+`test/integration/preview.test.js` detects the flags from `--help` rather than
+from a version string, so it skips itself rather than failing against a CLI that
+predates them. `BG_CLI_BINARY=/path/to/bg-deploy npm run test:integration` runs it
+against a build fetched by hand; that escape hatch is test-only, and the Action
+itself never runs an unverified binary.
 
-- `test/integration/preview.test.js` skips itself, detecting the flags from
-  `--help` rather than from a version string;
-- `BG_CLI_BINARY=/path/to/bg-deploy npm run test:integration` runs it against a
-  build fetched by hand. That escape hatch is test-only — the Action itself never
-  runs an unverified binary.
+## The GitLab component
 
-Drop the skip only when it stops firing on its own; a skipping preview suite is
-the signal that the pin has not caught up yet.
+`gitlab/` is the CI/CD component published at
+[gitlab.com/behindgate/ci](https://gitlab.com/behindgate/ci). It is a whole
+project, `.gitlab-ci.yml` and `LICENSE` included, and that GitLab project is a
+mirror: [`gitlab-sync.yml`](../.github/workflows/gitlab-sync.yml) runs
+[`script/gitlab-sync.sh`](../script/gitlab-sync.sh) on every merge to `main` that
+touches the directory, replacing the project's tree with this one. Anything
+committed there and not here is removed on the next sync.
+
+Both integrations wrap the same CLI, so a pinned version, a new input or a change
+in the CLI's contract is one review rather than two that drift. The component
+carries its own pinned checksums because it is a shell script with no access to
+`versions.json`; keep the two tables in step when `cli-update.yml` moves the pin.
+
+The sync needs **`GITLAB_SYNC_TOKEN`**, a GitLab token with write access to the
+project, as a repository secret. Without it the job fails on the first line
+rather than pushing a partial tree. To run it by hand:
+
+```bash
+( read -rsp 'GitLab token: ' GITLAB_TOKEN; echo; export GITLAB_TOKEN
+  script/gitlab-sync.sh )
+```
+
+The subshell keeps the token out of the shell history and out of the
+environment once the run is over.
+
+It is idempotent: with nothing to change it says so and exits 0.
+
+Releases are not synced. Publishing to the catalog means creating a release from
+a tag in the GitLab project, which stays a deliberate act there, and a feature
+like a new input needs a new minor tag before anyone including `@2` sees it.
 
 ## Hosts are per-environment
 
