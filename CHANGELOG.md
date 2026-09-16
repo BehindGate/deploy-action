@@ -1,5 +1,12 @@
 # Changelog
 
+## [1.1.1](https://github.com/BehindGate/deploy-action/compare/v1.1.0...v1.1.1) (2026-09-16)
+
+
+### Bug Fixes
+
+* stop the tags example being evaluated as an expression ([#31](https://github.com/BehindGate/deploy-action/issues/31)) ([594235b](https://github.com/BehindGate/deploy-action/commit/594235b8e7d235af69b8f643b4ba88d2883f0a39))
+
 ## [1.1.0](https://github.com/BehindGate/deploy-action/compare/v1.0.0...v1.1.0) (2026-09-16)
 
 
