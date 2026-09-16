@@ -147,11 +147,14 @@ inputs:
       Labels to record on the release, one per line, as `name=value` or as a
       bare `name`. They are shown in the workspace's deploy history.
 
-      Example, with the expressions written by the calling workflow:
+      Example, with each value resolved by the calling workflow. The braces of
+      an expression cannot appear here, since GitHub rejects a template
+      expression anywhere in an action's metadata:
 
         tags: |
-          sha=${{ '${{' }} github.sha }}
-          run=${{ '${{' }} github.run_number }}
+          sha=<github.sha>
+          run=<github.run_number>
+          nightly
 
       A name starts with a letter and holds letters, digits, dot, hyphen or
       underscore, and may appear once. `name=` with nothing after it records the
