@@ -138,3 +138,59 @@ jobs:
       # visible CI failure instead of a surprise mid-deploy for a user.
       - name: Verify pinned checksums against the download host
         run: node script/checksums.js verify
+
+  loads:
+    name: The Action loads on a runner
+    runs-on: ubuntu-latest
+    steps:
+      - uses: actions/checkout@v4
+      - uses: actions/setup-node@v4
+        with:
+          node-version-file: .node-version
+          cache: npm
+      - run: npm ci
+
+      - name: Start the capture server
+        env:
+          CAPTURE_REQUESTS: ${{ runner.temp }}/capture-requests.json
+        run: |
+          node script/capture-server-daemon.js &
+          echo "CAPTURE_PID=$!" >> "$GITHUB_ENV"
+          # The daemon publishes its address through $GITHUB_ENV, which the
+          # runner only applies once this step has finished.
+          for _ in $(seq 1 100); do
+            if grep -q '^CAPTURE_URL=' "$GITHUB_ENV"; then exit 0; fi
+            sleep 0.1
+          done
+          echo "::error::The capture server did not start."
+          exit 1
+
+      - run: mkdir -p "$RUNNER_TEMP/site" && echo hello > "$RUNNER_TEMP/site/index.html"
+
+      # No assertion here beyond the step running at all: a `${{` left in an
+      # input description fails the whole job at "Prepare all required actions",
+      # which is the failure this job exists to catch. The tags come from the
+      # calling workflow, where expressions are evaluated, and are checked below.
+      - name: Deploy through the Action
+        uses: ./
+        with:
+          path: ${{ runner.temp }}/site
+          token: ${{ env.CAPTURE_TOKEN }}
+          url: ${{ env.CAPTURE_URL }}
+          tags: |
+            sha=${{ github.sha }}
+            run=${{ github.run_number }}
+            nightly
+
+      - name: Assert the tags reached the release
+        env:
+          CAPTURE_REQUESTS: ${{ runner.temp }}/capture-requests.json
+          EXPECTED_SHA: ${{ github.sha }}
+          EXPECTED_RUN: ${{ github.run_number }}
+        run: |
+          kill "$CAPTURE_PID"
+          for _ in $(seq 1 50); do
+            [ -s "$CAPTURE_REQUESTS" ] && break
+            sleep 0.1
+          done
+          node script/assert-tags.js
