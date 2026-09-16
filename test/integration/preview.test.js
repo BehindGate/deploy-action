@@ -4,10 +4,10 @@
  * Integration tests for the per-pull-request preview flow, against the REAL
  * bg-deploy binary and with no real credentials.
  *
- * These cover what unit tests over `src/core/inputs.js` cannot: that the flags
- * the Action builds are the flags the CLI accepts, and that they reach the
- * deploy API as the calls a preview actually needs -- an app created on the way
- * up, and deleted on the way down.
+ * These cover what the unit tests cannot: that the flags the Action builds are
+ * the flags the CLI accepts, and that they reach the deploy API as the calls a
+ * preview actually needs -- an app created on the way up, and deleted on the
+ * way down.
  *
  * The credential here is the job itself rather than a deploy token: a local
  * stand-in for the Actions token service mints an OIDC token, and the capture
