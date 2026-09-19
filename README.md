@@ -7,6 +7,8 @@ Deploy a static site to [BehindGate](https://behindgate.net) in one step.
 This Action downloads the `bg-deploy` CLI, verifies it against a checksum
 committed in this repository, caches it across runs, and deploys your build.
 
+The product documentation lives at [kb.behindgate.com](https://kb.behindgate.com/): [Deploy with the GitHub Action](https://kb.behindgate.com/guides/deploy-with-github-actions) covers the same ground as this README for a reader who is not in the repository, [Deploy from CI without a secret](https://kb.behindgate.com/guides/deploy-from-ci) covers CI trusts and the other forges, and [Deploy with the CLI](https://kb.behindgate.com/guides/deploy-with-cli) covers the binary this Action runs.
+
 ## Quick start
 
 ```yaml
@@ -111,10 +113,12 @@ point of the paragraph above.
 exchanges the OIDC token GitHub mints for the run for a deploy token that lives
 fifteen minutes, so the repository stores no long-lived secret at all.
 
-That needs three things:
+That needs two things:
 
 - `permissions: id-token: write` on the job, which is what mints the OIDC token;
 - a CI trust for this repository in the workspace, under **Settings → CI trusts**.
+  [Deploy from CI without a secret](https://kb.behindgate.com/guides/deploy-from-ci)
+  walks through setting one up and what it grants.
 
 The endpoint comes from the default, or from `url` where you set one; there is no
 token to carry one in this mode.
@@ -142,18 +146,34 @@ on:
     types: [opened, synchronize, reopened, closed]
 
 jobs:
-  preview:
+  build:
     if: github.event.action != 'closed'
     runs-on: ubuntu-latest
+    # No id-token here: this job runs the pull request's own build.
     permissions:
       contents: read
-      id-token: write        # mints the OIDC token; no deploy token needed
     steps:
       - uses: actions/checkout@v4
       - uses: actions/setup-node@v4
         with:
           node-version: 22
       - run: npm ci && npm run build
+      - uses: actions/upload-artifact@v4
+        with:
+          name: dist
+          path: dist
+
+  preview:
+    needs: build
+    runs-on: ubuntu-latest
+    # Holds the OIDC identity, so it takes only the built files.
+    permissions:
+      id-token: write
+    steps:
+      - uses: actions/download-artifact@v4
+        with:
+          name: dist
+          path: dist
 
       - uses: behindgate/deploy-action@v1
         id: preview
@@ -168,7 +188,6 @@ jobs:
     if: github.event.action == 'closed'
     runs-on: ubuntu-latest
     permissions:
-      contents: read
       id-token: write
     steps:
       - uses: behindgate/deploy-action@v1
@@ -177,9 +196,18 @@ jobs:
           delete-app: true
 ```
 
-The teardown job needs no checkout and no `path`: it uploads nothing. Deleting a
-path with no app there succeeds, so the job is safe to re-run — and to run on a
-pull request that never got a preview.
+The build and the deploy are separate jobs on purpose. A job holding
+`id-token: write` can exchange its identity for a deploy token that may create
+and delete apps anywhere in the site the trust names, so the pull request's own
+build must not run beside it: the build job has no OIDC permission, and the
+deploy job takes only the built files. Anyone who can push a branch to the
+repository can change the workflow, which is why previews belong on a site of
+their own rather than the site serving production.
+
+Neither the preview job nor the teardown job checks anything out, and teardown
+needs no `path`: it uploads nothing. Deleting a path with no app there succeeds,
+so the job is safe to re-run, and to run on a pull request that never got a
+preview.
 
 Give the trust "create apps" and "delete apps" over the site, or the two flags
 fail with an exit 2 naming the missing permission.
