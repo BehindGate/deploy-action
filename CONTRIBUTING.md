@@ -50,6 +50,16 @@ npm run build      # dist/ is committed; CI fails if it drifts from src/
 install step at Action runtime. If you changed anything under `src/`, rebuild and
 commit the result in the same pull request.
 
+CI also runs [windbag](https://github.com/scale-venture-partners/windbag) over
+the comments a pull request adds, and fails on a comment that narrates the
+change or hedges about whether the code works. Settings live in `windbag.toml`.
+To run the same check locally before pushing:
+
+```bash
+pip install windbag
+windbag check --staged
+```
+
 ## Tests
 
 Unit tests are pure and run everywhere. Integration tests drive the **real**

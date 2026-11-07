@@ -150,6 +150,125 @@ same commit if the new version should become the default.
 Confirm the version string with `bg-deploy --version`, which prints e.g.
 `bg-deploy 2026.07.1 (git 79f1f9f)`.
 
+## The undocumented `env` input
+
+`env` selects the BehindGate environment and resolves the two addresses that have
+to agree — the deploy endpoint and the host the CLI is downloaded from:
+
+| `env` | Deploy endpoint | CLI downloads |
+| --- | --- | --- |
+| `prod` (default) | `https://app.behindgate.com/api/deploy/releases` | `https://app.behindgate.com` |
+| `test` | `https://app.test.behindgate.net/api/deploy/releases` | `https://app.test.behindgate.net` |
+
+Anything else fails the step rather than falling back to the default, which would
+deploy to an environment nobody named. `url` and `download-base-url` each win
+over it, independently: overriding the endpoint leaves downloads on the
+environment's host.
+
+**It is deliberately absent from the README**, because the test environment is
+BehindGate's own and not somewhere a user of this Action deploys. `url` and
+`download-base-url` are the documented way to reach any other endpoint, and they
+cover every case a user has. Keep it that way when editing the README: the table
+above, `action.yml`, and `src/core/environments.js` are where it is written down.
+
+Nothing user-facing names the input either. The endpoint is reported in the log
+and the job summary as "pinned via the `url` input" or "pinned via the prod
+default", and the exit-2 guidance in `src/core/errors.js` talks about the
+endpoint rather than about `env`. Check that when changing those messages.
+
+The input still has to be declared in `action.yml`: passing an undeclared input
+makes the runner log "Unexpected input(s)" on every run, which is worse than a
+terse description.
+
+### How the CLI is resolved per environment
+
+`versions.json` describes production, and only production. Each environment
+carries a `pinnedCli` flag saying so, and it decides where the CLI's version and
+checksum come from:
+
+| | Which build | Checksum | Verified against |
+| --- | --- | --- | --- |
+| `prod` | `defaultVersion`, or `cli-version` | `versions.json` | a hash committed here |
+| `test` | the host's unversioned `/downloads/`, or `cli-version` | the host's `SHA256SUMS.txt` | a file the same host serves |
+
+Test republishes builds under the same version string. On 2026-08-16 the
+`2026.8.5` linux-amd64 archive changed from `7d4250e0df0b` to `e566ce5c86a7`
+inside three hours. A committed pin cannot survive that, and there is no
+schedule that could re-capture it fast enough, so the choice on that host is
+between the host's own manifest and no verification at all.
+
+Be clear about what the manifest is worth: the host serves both the binary and
+the file describing it, so it proves the download arrived intact and nothing
+more. That is why production does not use it, and why the run warns whenever
+this path is taken. It still catches the failure that actually happens on a
+republishing host -- a truncated or half-published archive.
+
+Without `cli-version`, both the archive and its manifest are read from the
+host's **unversioned** paths -- `/downloads/SHA256SUMS.txt` and
+`/downloads/<archive>` -- which is the only question worth asking a host that
+republishes: what are you serving now? It also means no URL is built from
+anything a remote document said, which is what the quality gate objected to when
+the version came from `/downloads/index.json`. Such a build has no version until
+the CLI reports its own in `--json` output, so it is identified by its digest,
+and the job log calls it `(current build e566ce5c86a7)`.
+
+The tool cache is keyed on **version plus digest** (`2026.8.5-sha.e566ce5c86a7`),
+or on the digest alone (`0.0.0-sha.e566ce5c86a7`) for a build with no version. A key of version alone would hand back the
+build that was replaced, and a cache hit is indistinguishable from a fast run.
+The digest rides in a semver *prerelease* segment on purpose: `semver.clean`,
+which the tool cache applies, keeps a prerelease and discards build metadata, so
+`2026.8.5+sha.…` would collapse into the same entry as `2026.8.5`. A unit test
+pins that, against the same copy of semver the tool cache resolves.
+
+`node script/checksums.js verify` and the `checksums` CI job are unchanged: they
+describe production, which is the only thing `versions.json` claims to describe.
+
+## The preview inputs
+
+`site-url`, `create-app` and `delete-app` map onto CLI flags added in
+**2026.9.1**, which is the pinned default. They fail as unknown flags on an
+earlier release held through `cli-version`. On `env: test` they follow whatever
+the host reports as current.
+
+`test/integration/preview.test.js` detects the flags from `--help` rather than
+from a version string, so it skips itself rather than failing against a CLI that
+predates them. `BG_CLI_BINARY=/path/to/bg-deploy npm run test:integration` runs it
+against a build fetched by hand; that escape hatch is test-only, and the Action
+itself never runs an unverified binary.
+
+## The GitLab component
+
+`gitlab/` is the CI/CD component published at
+[gitlab.com/behindgate/ci](https://gitlab.com/behindgate/ci). It is a whole
+project, `.gitlab-ci.yml` and `LICENSE` included, and that GitLab project is a
+mirror: [`gitlab-sync.yml`](../.github/workflows/gitlab-sync.yml) runs
+[`script/gitlab-sync.sh`](../script/gitlab-sync.sh) on every merge to `main` that
+touches the directory, replacing the project's tree with this one. Anything
+committed there and not here is removed on the next sync.
+
+Both integrations wrap the same CLI, so a pinned version, a new input or a change
+in the CLI's contract is one review rather than two that drift. The component
+carries its own pinned checksums because it is a shell script with no access to
+`versions.json`; keep the two tables in step when `cli-update.yml` moves the pin.
+
+The sync needs **`GITLAB_SYNC_TOKEN`**, a GitLab token with write access to the
+project, as a repository secret. Without it the job fails on the first line
+rather than pushing a partial tree. To run it by hand:
+
+```bash
+( read -rsp 'GitLab token: ' GITLAB_TOKEN; echo; export GITLAB_TOKEN
+  script/gitlab-sync.sh )
+```
+
+The subshell keeps the token out of the shell history and out of the
+environment once the run is over.
+
+It is idempotent: with nothing to change it says so and exits 0.
+
+Releases are not synced. Publishing to the catalog means creating a release from
+a tag in the GitLab project, which stays a deliberate act there, and a feature
+like a new input needs a new minor tag before anyone including `@2` sees it.
+
 ## Hosts are per-environment
 
 BehindGate serves downloads from a different host per environment — production

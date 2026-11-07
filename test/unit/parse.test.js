@@ -13,12 +13,12 @@ const {
 /** Verbatim stdout from `bg-deploy --json` 2026.8.3 on a successful run. */
 const SUCCESS_STDOUT =
   '{"releaseId":"rel_01J8ZQ4M2N","url":"https://demo.behindgate.com/my-app/",' +
-  '"endpoint":"https://app.behindgate.com/api/deploy","status":"published",' +
+  '"endpoint":"https://app.behindgate.com/api/deploy/releases","status":"published",' +
   '"version":"2026.8.3"}\n';
 
 /** Human progress goes to stderr, and must never be parsed as the result. */
 const SUCCESS_STDERR = [
-  'Deploying to https://app.behindgate.com/api/deploy',
+  'Deploying to https://app.behindgate.com/api/deploy/releases',
   '  from public',
   'Requesting a release…',
   'Uploading 4210 bytes…',
@@ -27,15 +27,43 @@ const SUCCESS_STDERR = [
   '',
 ].join('\n');
 
+/** Verbatim stdout from a teardown (`bg-deploy --delete-app --json` 2026.8.5). */
+const DELETE_STDOUT =
+  '{"path":"/preview/pr-42","deleted":true,' +
+  '"endpoint":"https://app.test.behindgate.net/api/deploy/releases","version":"2026.8.5"}\n';
+
 describe('parseDeployJson', () => {
   test('reads every field from a successful run', () => {
     assert.deepEqual(parseDeployJson(SUCCESS_STDOUT), {
       releaseId: 'rel_01J8ZQ4M2N',
       url: 'https://demo.behindgate.com/my-app/',
-      endpoint: 'https://app.behindgate.com/api/deploy',
+      endpoint: 'https://app.behindgate.com/api/deploy/releases',
       status: 'published',
       version: '2026.8.3',
+      path: null,
+      deleted: null,
     });
+  });
+
+  test('reads a teardown, which reports no release and no address', () => {
+    assert.deepEqual(parseDeployJson(DELETE_STDOUT), {
+      releaseId: null,
+      url: null,
+      endpoint: 'https://app.test.behindgate.net/api/deploy/releases',
+      status: null,
+      version: '2026.8.5',
+      path: '/preview/pr-42',
+      deleted: true,
+    });
+  });
+
+  test('deleted: false survives as false, not as absent', () => {
+    // A teardown of a path with no app succeeds with deleted:false, so a
+    // teardown job is safe to re-run. Collapsing that to null would report
+    // "nothing to delete" as an unreadable result.
+    const parsed = parseDeployJson('{"path":"/preview/pr-42","deleted":false}');
+    assert.equal(parsed.deleted, false);
+    assert.equal(parsed.releaseId, null);
   });
 
   test('the deployed URL is now available, so the url output can populate', () => {
