@@ -29576,7 +29576,9 @@ async function fetchText(url, what) {
   try {
     response = await fetch(url);
   } catch (error) {
-    throw new Error(`Could not reach the ${what} at ${url}: ${error.message}`);
+    throw new Error(`Could not reach the ${what} at ${url}: ${error.message}`, {
+      cause: error,
+    });
   }
 
   if (!response.ok) {
@@ -31915,8 +31917,7 @@ module.exports = /*#__PURE__*/JSON.parse('{"comment":["Pinned SHA256 checksums f
 /******/ 	}
 /******/ 	
 /************************************************************************/
-/******/ 	/* webpack/runtime/compat */
-/******/ 	
+/******/ 	/* webpack/runtime/asset-relocator-loader */
 /******/ 	if (typeof __nccwpck_require__ !== 'undefined') __nccwpck_require__.ab = __dirname + "/";
 /******/ 	
 /************************************************************************/
