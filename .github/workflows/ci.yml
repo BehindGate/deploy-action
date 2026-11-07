@@ -18,12 +18,65 @@ jobs:
     runs-on: ubuntu-latest
     steps:
       - uses: actions/checkout@v4
+        with:
+          # Full history so the comment lint below can reach the pull request's
+          # base commit.
+          fetch-depth: 0
       - uses: actions/setup-node@v7
         with:
           node-version-file: .node-version
           cache: npm
       - run: npm ci
       - run: npm run lint
+      - uses: actions/setup-python@6d4fd22b20465ccc0f7354476588e8df7c9ca0e0 # v7.1.0
+        if: ${{ github.event_name == 'pull_request' }}
+        with:
+          python-version: "3.12"
+      # Judging only the lines this pull request adds needs a worktree at the base
+      # commit, with the pull request's versions of the changed files copied in.
+      - name: Comment lint (windbag)
+        if: ${{ github.event_name == 'pull_request' }}
+        env:
+          BASE_SHA: ${{ github.event.pull_request.base.sha }}
+        run: |
+          set -euo pipefail
+          python -m pip install --quiet --only-binary=:all: windbag==0.1.1
+          mapfile -d '' -t files < <(git diff -z --name-only --diff-filter=ACMRT "$BASE_SHA" HEAD)
+          if [ "${#files[@]}" -eq 0 ]; then exit 0; fi
+          base_tree="$RUNNER_TEMP/windbag-base"
+          git worktree add --detach --quiet "$base_tree" "$BASE_SHA"
+          # What the pull request deleted can stand where it now wants a file
+          # or a directory.
+          git diff -z --name-only --diff-filter=D "$BASE_SHA" HEAD |
+            while IFS= read -r -d '' gone; do
+              rm -rf -- "$base_tree/$gone"
+            done
+          # Without the rename applied, the whole destination file reads as added.
+          rename_tmp="$(mktemp -d "$RUNNER_TEMP/windbag-rename.XXXXXX")"
+          git diff -z --name-status --diff-filter=R "$BASE_SHA" HEAD |
+            while IFS= read -r -d '' _status && IFS= read -r -d '' old && IFS= read -r -d '' new; do
+              case "$new" in */*) parent="${new%/*}";; *) parent=.;; esac
+              # The destination can be the source's own parent, so hold the
+              # source aside before clearing the path it moves to.
+              mv -- "$base_tree/$old" "$rename_tmp/blob"
+              rm -rf -- "$base_tree/$new"
+              git -C "$base_tree" rm -rq --cached --ignore-unmatch -- "$old" "$new"
+              mkdir -p -- "$base_tree/$parent"
+              mv -- "$rename_tmp/blob" "$base_tree/$new"
+              git -C "$base_tree" add -- "$new"
+            done
+          if ! git -C "$base_tree" diff --cached --quiet; then
+            git -C "$base_tree" -c user.email=ci@behindgate.invalid -c user.name=ci commit -qm "rename baseline"
+          fi
+          for f in "${files[@]}"; do
+            case "$f" in */*) parent="${f%/*}";; *) parent=.;; esac
+            mkdir -p -- "$base_tree/$parent"
+            # A symlink or directory left by the baseline would take the copy.
+            rm -rf -- "$base_tree/$f"
+            cp -P -- "$f" "$base_tree/$f"
+          done
+          cd "$base_tree"
+          windbag check --config "$GITHUB_WORKSPACE/windbag.toml" --new-only -- "${files[@]}"
 
   test:
     name: Test (${{ matrix.os }})
@@ -85,3 +138,59 @@ jobs:
       # visible CI failure instead of a surprise mid-deploy for a user.
       - name: Verify pinned checksums against the download host
         run: node script/checksums.js verify
+
+  loads:
+    name: The Action loads on a runner
+    runs-on: ubuntu-latest
+    steps:
+      - uses: actions/checkout@v4
+      - uses: actions/setup-node@v7
+        with:
+          node-version-file: .node-version
+
+      # The bundle is committed and the helpers this job runs import nothing
+      # but node builtins, so there is no install step to need dependencies.
+      - name: Start the capture server
+        env:
+          CAPTURE_REQUESTS: ${{ runner.temp }}/capture-requests.json
+        run: |
+          node script/capture-server-daemon.js &
+          echo "CAPTURE_PID=$!" >> "$GITHUB_ENV"
+          # The daemon publishes its address through $GITHUB_ENV, which the
+          # runner only applies once this step has finished.
+          for _ in $(seq 1 100); do
+            if grep -q '^CAPTURE_URL=' "$GITHUB_ENV"; then exit 0; fi
+            sleep 0.1
+          done
+          echo "::error::The capture server did not start."
+          exit 1
+
+      - run: mkdir -p "$RUNNER_TEMP/site" && echo hello > "$RUNNER_TEMP/site/index.html"
+
+      # No assertion here beyond the step running at all: a `${{` left in an
+      # input description fails the whole job at "Prepare all required actions",
+      # which is the failure this job exists to catch. The tags come from the
+      # calling workflow, where expressions are evaluated, and are checked below.
+      - name: Deploy through the Action
+        uses: ./
+        with:
+          path: ${{ runner.temp }}/site
+          token: ${{ env.CAPTURE_TOKEN }}
+          url: ${{ env.CAPTURE_URL }}
+          tags: |
+            sha=${{ github.sha }}
+            run=${{ github.run_number }}
+            nightly
+
+      - name: Assert the tags reached the release
+        env:
+          CAPTURE_REQUESTS: ${{ runner.temp }}/capture-requests.json
+          EXPECTED_SHA: ${{ github.sha }}
+          EXPECTED_RUN: ${{ github.run_number }}
+        run: |
+          kill "$CAPTURE_PID"
+          for _ in $(seq 1 50); do
+            [ -s "$CAPTURE_REQUESTS" ] && break
+            sleep 0.1
+          done
+          node script/assert-tags.js

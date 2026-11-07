@@ -76,6 +76,23 @@ function resolveArtifact(version, platform, table = DEFAULT_TABLE) {
 }
 
 /**
+ * The archive and binary names for a platform, by the vendor's convention.
+ *
+ * `resolveArtifact` reads these from the pin table, which is the right answer
+ * whenever the version is pinned. This derives them instead, for the one case
+ * that has no entry to read: a host serving a build newer than anything
+ * committed here. A unit test holds the convention to every pinned entry, so a
+ * rename upstream fails here rather than as a 404 mid-deploy.
+ */
+function artifactNames(platform) {
+  const windows = String(platform).startsWith('windows-');
+  return {
+    archive: `bg-deploy-${platform}.${windows ? 'zip' : 'tar.gz'}`,
+    binary: windows ? 'bg-deploy.exe' : 'bg-deploy',
+  };
+}
+
+/**
  * Normalise a vendor version string into valid semver, or null if it cannot be.
  *
  * This exists because tool caches key on semver, and BehindGate's version
@@ -102,6 +119,71 @@ function semverSafeVersion(version) {
 }
 
 /**
+ * Versions that may be spliced into a URL path.
+ *
+ * A version reaches these builders from a workflow input or, on an unpinned
+ * environment, from the host's own release index -- so it is remote data
+ * steering the next request. Anything outside this shape is refused rather than
+ * escaped: `latest: "../../elsewhere"` is not a version, and treating it as one
+ * would fetch a path nobody named.
+ *
+ * The character set is deliberately one that percent-encoding leaves untouched,
+ * so validating and encoding cannot disagree about what the segment is.
+ */
+const URL_SAFE_VERSION = /^[A-Za-z0-9][A-Za-z0-9._~-]{0,63}$/;
+
+class UnsafeVersionError extends Error {
+  constructor(version) {
+    super(
+      `"${version}" is not a usable bg-deploy version. Expected letters, ` +
+        `digits, dots, hyphens, underscores or tildes (up to 64 characters), ` +
+        `such as 2026.8.5. A value outside that cannot be part of a download ` +
+        `URL, since it would change which path is fetched.`
+    );
+    this.name = 'UnsafeVersionError';
+    this.version = version;
+  }
+}
+
+/** Whether a version can be used as a URL path segment. */
+function isUrlSafeVersion(version) {
+  return URL_SAFE_VERSION.test(String(version ?? ''));
+}
+
+/**
+ * The version as a URL path segment: matched against the pattern, then encoded.
+ *
+ * What is returned is the MATCH rather than the argument. The two are the same
+ * string, and taking it from the match is what makes the guarantee local: the
+ * value that goes into a URL provably came from the pattern above, with no
+ * reliance on a caller having checked anything first.
+ *
+ * @throws {UnsafeVersionError}
+ */
+function versionSegment(version) {
+  const matched = URL_SAFE_VERSION.exec(String(version ?? ''));
+  if (!matched) throw new UnsafeVersionError(version);
+
+  return encodeURIComponent(matched[0]);
+}
+
+/**
+ * Drop any trailing slashes from a base URL.
+ *
+ * A loop rather than `replace(/\/+$/, '')`: the regex form backtracks, so its
+ * runtime grows super-linearly with a long run of slashes, and these base URLs
+ * come from a workflow input. The result is identical and the cost is not.
+ */
+function withoutTrailingSlash(value) {
+  const text = String(value);
+
+  let end = text.length;
+  while (end > 0 && text.charAt(end - 1) === '/') end -= 1;
+
+  return text.slice(0, end);
+}
+
+/**
  * Build the download URL for an archive.
  *
  * Versioned and immutable: `/downloads/<version>/<archive>`. Until 2026.8.x the
@@ -115,13 +197,67 @@ function semverSafeVersion(version) {
  * the same host), so hardcoding one would break every non-production user.
  */
 function downloadUrl(baseUrl, version, archive) {
-  const trimmed = String(baseUrl).replace(/\/+$/, '');
-  return `${trimmed}/downloads/${version}/${archive}`;
+  return `${withoutTrailingSlash(baseUrl)}/downloads/${versionSegment(version)}/${archive}`;
+}
+
+/**
+ * URL of the archive a host is serving RIGHT NOW, with no version in the path.
+ *
+ * The versioned paths above name a specific release. These name whatever the
+ * host currently publishes, which is the only thing an environment that
+ * republishes can be asked for -- and it takes no version, so nothing a remote
+ * document said can decide which URL is fetched.
+ */
+function currentDownloadUrl(baseUrl, archive) {
+  return `${withoutTrailingSlash(baseUrl)}/downloads/${archive}`;
+}
+
+/** URL of the checksum manifest for whatever the host is serving right now. */
+function currentChecksumsUrl(baseUrl) {
+  return `${withoutTrailingSlash(baseUrl)}/downloads/SHA256SUMS.txt`;
 }
 
 /** URL of the published release index (`{latest, versions: [...]}`). */
 function indexUrl(baseUrl) {
-  return `${String(baseUrl).replace(/\/+$/, '')}/downloads/index.json`;
+  return `${withoutTrailingSlash(baseUrl)}/downloads/index.json`;
+}
+
+/** URL of the checksum manifest a host serves beside one version's archives. */
+function checksumsUrl(baseUrl, version) {
+  return `${withoutTrailingSlash(baseUrl)}/downloads/${versionSegment(version)}/SHA256SUMS.txt`;
+}
+
+/**
+ * The tool-cache key for a build, as version plus the digest that identifies it.
+ *
+ * A version alone is enough where a version is published once and never again.
+ * It is not enough on a host that republishes: the cache would hand back the
+ * previous build under the same key, and the run would silently use bytes the
+ * host has since replaced -- the one thing re-downloading was supposed to catch.
+ *
+ * The digest goes in a PRERELEASE segment rather than semver build metadata:
+ * `semver.clean`, which the tool cache applies to whatever it is given, keeps a
+ * prerelease and discards build metadata. `2026.8.5+sha.abc` would land in the
+ * same cache entry as `2026.8.5`, which is exactly the collision being avoided.
+ *
+ * @returns {string|null} null when the version cannot be normalised, as before
+ */
+function cacheKey(version, sha256) {
+  const digest = String(sha256 ?? '').trim().toLowerCase();
+  const identified = /^[0-9a-f]{12,}$/.test(digest);
+
+  // A build taken from the host's unversioned path has no version to key on --
+  // its identity IS its digest. `0.0.0` carries no claim about which release it
+  // is; the digest that follows is what distinguishes one build from the next.
+  if (version === null || version === undefined || version === '') {
+    return identified ? `0.0.0-sha.${digest.slice(0, 12)}` : null;
+  }
+
+  const normalized = semverSafeVersion(version);
+  if (!normalized) return null;
+  if (!identified) return normalized;
+
+  return `${normalized}-sha.${digest.slice(0, 12)}`;
 }
 
 module.exports = {
@@ -130,9 +266,18 @@ module.exports = {
   defaultDownloadBaseUrl,
   knownVersions,
   resolveArtifact,
+  artifactNames,
   semverSafeVersion,
+  cacheKey,
+  withoutTrailingSlash,
+  isUrlSafeVersion,
+  versionSegment,
+  UnsafeVersionError,
   downloadUrl,
+  currentDownloadUrl,
   indexUrl,
+  checksumsUrl,
+  currentChecksumsUrl,
   UnknownVersionError,
   UnknownPlatformError,
 };
