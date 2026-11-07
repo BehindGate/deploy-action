@@ -31,7 +31,7 @@ jobs:
     outputs:
       tag: ${{ steps.plan.outputs.tag }}
     steps:
-      - uses: actions/checkout@v4
+      - uses: actions/checkout@v7
         with:
           # Always the default branch, never the branch this workflow was
           # dispatched from, so a release can only ever contain reviewed code.

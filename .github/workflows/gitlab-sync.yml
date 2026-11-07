@@ -29,7 +29,7 @@ jobs:
     steps:
       # The job holds a GitLab token, and the checkout's own credential has no
       # part in the push, so it is not left in .git/config for the sync to reach.
-      - uses: actions/checkout@v4
+      - uses: actions/checkout@v7
         with:
           persist-credentials: false
 
