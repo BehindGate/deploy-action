@@ -57,7 +57,9 @@ async function fetchText(url, what) {
   try {
     response = await fetch(url);
   } catch (error) {
-    throw new Error(`Could not reach the ${what} at ${url}: ${error.message}`);
+    throw new Error(`Could not reach the ${what} at ${url}: ${error.message}`, {
+      cause: error,
+    });
   }
 
   if (!response.ok) {
